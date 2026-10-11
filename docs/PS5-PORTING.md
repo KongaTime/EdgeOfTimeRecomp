@@ -86,10 +86,14 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 - **Guest memory in direct memory** (section 2): the fork's `src/core/memory_ps5.cpp`.
   Its test, `ps5/tests/memory_ps5_test.cpp` in the fork, lays the arena out as
   `Memory::Initialize` does and passes all 42 checks on PS5_PayloadSDK's host model of
-  the kernel, failure injection included. Its first console run, as a payload, mapped
-  the arena at `0x10_0000_0000` and showed the aliases working, but the console refused
-  direct memory after 27 of the physical heap's 256 chunks (54 MiB). A payload's process
-  likely gets far less direct memory than a title's 12 GiB; the test now measures that.
+  the kernel, failure injection included. Two console runs as a payload mapped the arena
+  at `0x10_0000_0000`, faulted on uncommitted memory, saw the aliases agree and tore down
+  cleanly, but **a payload's process has no direct memory to speak of**:
+  `sceKernelGetDirectMemorySize` answers 0, 1 MiB of 64 KiB allocations succeed before
+  `0x80020023`, and the first run got 27 of the physical heap's 256 chunks. Its flexible
+  memory is the other way round from a title's: 8158 MiB free. The rest of the test
+  (the 512 MiB commit, per-view protection, no-access windows) has to run in a title,
+  which is where the game will run.
 
 **Not done**
 
@@ -101,10 +105,7 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Waiting on you**
 
-- Run the updated memory test on the console (delete the old
-  `/data/rexglue-memory-test.txt` first). It reports how much direct memory a payload's
-  process gets. If that is the limit, the test has to run inside a title, which is also
-  where the game will run.
+- The memory test has to run inside a title (step 4 below makes one).
 
 ## Why this is feasible
 
