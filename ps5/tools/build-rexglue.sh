@@ -9,11 +9,12 @@
 #
 #   ../PS5_PayloadSDK   KongaTime/PS5_PayloadSDK, holding the pinned revision below
 #                       (PS5_PAYLOAD_SDK_FORK)
-#   ../PS5_ReXGlue      the ReXGlue fork with the PS5 target (REXGLUE_SRC); until it
-#                       is on GitHub, ps5/rexglue-patches/README.md says how to make it
+#   ../rexglue-sdk      KongaTime/rexglue-sdk, the ReXGlue fork with the PS5 target, at
+#                       the pinned revision or later (REXGLUE_SRC); the same checkout
+#                       docs/BUILDING.md builds the desktop game with
 #
 # The SDK goes to .deps/native/ps5-payload-sdk, the build to build-ps5/rexglue, the
-# libraries to ../PS5_ReXGlue/out/ps5-amd64. The last step lists every symbol the
+# libraries to ../rexglue-sdk/out/ps5-amd64. The last step lists every symbol the
 # libraries need that neither they nor the modules a title links by default provide:
 # anything there besides what the linker defines would stop the title's link.
 #
@@ -26,15 +27,16 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 parent=$(dirname "$root")
 sdk_fork=${PS5_PAYLOAD_SDK_FORK:-$parent/PS5_PayloadSDK}
-rexglue=${REXGLUE_SRC:-$parent/PS5_ReXGlue}
+rexglue=${REXGLUE_SRC:-$parent/rexglue-sdk}
 cache=$root/.deps/native
 sdk=$cache/ps5-payload-sdk
 build=$root/build-ps5/rexglue
 
 # The payload SDK fork at the revision PS5_RPCS3Title pins (1de8b37: pathconf, sbrk)
 sdk_revision=1de8b37d583de476ad07cde9a0d562b75fb1be8f
-# ReXGlue v0.10.0, the version reeot_manifest.toml pins; the fork's main builds on it
-rexglue_base=c94f5ebdcb3c9d1a460ca48e04f9758448f8d518
+# KongaTime/rexglue-sdk main: ReXGlue v0.10.0 (the version reeot_manifest.toml pins)
+# with the PS5 target
+rexglue_revision=3a81ea34a56e32849b8a1328966f6b98e694da3d
 
 # The submodules the runtime builds from (thirdparty/CMakeLists.txt, Vulkan on, Tracy off)
 submodules=(cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui sdl3 o1heap
@@ -67,11 +69,9 @@ clang_major=$("$sdk/bin/prospero-llvm-config" --version | cut -d. -f1)
 
 # The ReXGlue fork
 [[ -f $rexglue/CMakeLists.txt ]] ||
-    fail "no ReXGlue fork at $rexglue (set REXGLUE_SRC; ps5/rexglue-patches/README.md makes one)"
-git -C "$rexglue" merge-base --is-ancestor "$rexglue_base" HEAD 2>/dev/null ||
-    fail "$rexglue is not built on ReXGlue v0.10.0 ($rexglue_base)"
-grep -q REX_PLATFORM_PS5 "$rexglue/include/rex/platform.h" ||
-    fail "$rexglue has no PS5 target: apply ps5/rexglue-patches"
+    fail "no ReXGlue fork at $rexglue (git clone https://github.com/KongaTime/rexglue-sdk, or set REXGLUE_SRC)"
+git -C "$rexglue" merge-base --is-ancestor "$rexglue_revision" HEAD 2>/dev/null ||
+    fail "$rexglue does not contain the pinned fork revision ${rexglue_revision:0:7} (pull KongaTime/rexglue-sdk)"
 for submodule in "${submodules[@]}"; do
     if [[ ! -e $rexglue/thirdparty/$submodule/.git ]]; then
         step "fetching ReXGlue's $submodule"

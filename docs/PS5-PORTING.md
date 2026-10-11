@@ -12,6 +12,7 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `3a81ea3` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
 | [PS5_RPCS3](https://github.com/KongaTime/PS5_RPCS3) | `main` at `48f034b` |
@@ -47,9 +48,9 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Done**
 
-- **The ReXGlue runtime compiles for the PS5.** The fork's five commits (kept for now
-  in [`ps5/rexglue-patches/`](../ps5/rexglue-patches/README.md), on v0.10.0) build
-  `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+- **The ReXGlue runtime compiles for the PS5.** The fork's five commits on v0.10.0
+  ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
+  at `3a81ea3`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -85,9 +86,6 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Waiting on you**
 
-- Create the `KongaTime/PS5_ReXGlue` fork
-  ([`ps5/rexglue-patches/README.md`](../ps5/rexglue-patches/README.md)). The session that
-  did this work could not create repositories.
 - Run `ps5/probe` on the console (`make test PS5_HOST=<address>`) and keep
   `/data/rexglue-probe.txt`.
 
@@ -167,7 +165,7 @@ This mirrors how PS5_RPCS3Title is put together:
 | --- | --- | --- |
 | `KongaTime/PS5_EdgeOfTimeTitle` | The title: the PS5_VulkanTemplate foundation (launch, pad, klog, packaging, build/deploy/run tools) plus `title_main.cpp`, which starts the game. Made with `ps5/tools/new-title.py`. | new |
 | `KongaTime/EdgeOfTimeRecomp` (this one) | `__PROSPERO__` changes and a `ps5` CMake preset. | existing |
-| `KongaTime/PS5_ReXGlue` | Fork of `rexglue/rexglue-sdk` at v0.10.0. PS5 backends for memory, threads, faults and the app entry. | new fork |
+| [`KongaTime/rexglue-sdk`](https://github.com/KongaTime/rexglue-sdk) | Fork of `rexglue/rexglue-sdk` at v0.10.0. PS5 backends for memory, threads, faults and the app entry. Checked out as `../rexglue-sdk`, where `docs/BUILDING.md` already expects the SDK. | forked |
 | `KongaTime/PS5_SDL3` | Fork of `libsdl-org/SDL` (3.x). PS5 video, joystick and audio backends. | new fork |
 | `KongaTime/plume` | Fork of `zolaware/plume`. A small `__PROSPERO__` change to how volk is started (or a patch applied from this repo). | new fork |
 | PS5_PayloadSDK, PS5_Vulkan, PS5_Mesa | Unchanged; pinned by revision as the other titles pin them. | existing |
@@ -474,9 +472,9 @@ Keep this work in the fork unless upstream agrees to take it.
 
 1. **M0.** Build `linux-amd64-release` here and play to the first level.
 2. **Optional.** Try the Windows `REEOT_D3D12=OFF` build under prospero-win.
-3. **Fork** `rexglue/rexglue-sdk` at `c94f5eb` (v0.10.0) as `KongaTime/PS5_ReXGlue`,
-   and `libsdl-org/SDL` as `KongaTime/PS5_SDL3`. *(ReXGlue's commits are written and
-   waiting in `ps5/rexglue-patches/`; the forks themselves are not made yet.)*
+3. **Fork** `rexglue/rexglue-sdk` at `c94f5eb` (v0.10.0) as `KongaTime/rexglue-sdk`,
+   and `libsdl-org/SDL` as `KongaTime/PS5_SDL3`. *(ReXGlue: forked, with the PS5
+   commits on `main`. SDL3: not yet.)*
 4. **Make the title** with `new-title.py`, and pin PS5_PayloadSDK `1de8b37` and
    PS5_Vulkan as PS5_RPCS3Title does.
 5. **Cross-build ReXGlue unchanged** (`rexcore`, then `rexsystem` as a static library)
