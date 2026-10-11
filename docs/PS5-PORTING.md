@@ -1,8 +1,8 @@
 # Porting EdgeOfTimeRecompiled to the PS5 (homebrew)
 
 > [!IMPORTANT]
-> This is a plan, and the work has only just started: nothing has run on a console
-> yet ([Status](#status)). It covers an **unofficial homebrew title** for a jailbroken
+> This is a plan, and the work is early: the ReXGlue runtime builds for the PS5 and its
+> guest memory works on the console, but the game does not run yet ([Status](#status)). It covers an **unofficial homebrew title** for a jailbroken
 > PS5, built on my PS5 homebrew stack. It is not a PlayStation Store release, and no
 > game files are or will be included.
 
@@ -12,7 +12,7 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `40f75ce` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `b84a414` |
 | [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `6f90a64` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
@@ -45,13 +45,13 @@ Written 2026-10-11 against these revisions:
 
 ## Status
 
-As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a console.
+As of 2026-10-11. Everything here was built on a Linux PC; the probe and the memory test have run on the console, the runtime has not.
 
 **Done**
 
 - **The ReXGlue runtime compiles for the PS5.** The fork's commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `40f75ce`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `b84a414`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -87,22 +87,30 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 - **Guest memory in direct memory** (section 2): the fork's `src/core/memory_ps5.cpp`.
   Its test, `ps5/tests/memory_ps5_test.cpp` in the fork, lays the arena out as
   `Memory::Initialize` does and passes all 42 checks on PS5_PayloadSDK's host model of
-  the kernel, failure injection included. Two console runs as a payload mapped the arena
-  at `0x10_0000_0000`, faulted on uncommitted memory, saw the aliases agree and tore down
-  cleanly, but **a payload's process has no direct memory to speak of**:
-  `sceKernelGetDirectMemorySize` answers 0, 1 MiB of 64 KiB allocations succeed before
-  `0x80020023`, and the first run got 27 of the physical heap's 256 chunks. Its flexible
-  memory is the other way round from a title's: 8158 MiB free. The rest of the test
-  (the 512 MiB commit, per-view protection, no-access windows) has to run in a title,
-  which is where the game will run.
+  the kernel, failure injection included. **On the console, in the title, all 36 checks
+  that can run there passed** (2026-10-11; the fork's
+  [`ps5/tests/results/2026-10-11-title.txt`](https://github.com/KongaTime/rexglue-sdk/blob/main/ps5/tests/results/2026-10-11-title.txt)):
+
+  | Checked | In the title |
+  | --- | --- |
+  | memory | 12288 MiB of direct memory, 12268 MiB of it in one free block; 417 MiB of flexible memory free |
+  | the physical heap's 512 MiB commit | 25.5 ms, 256 direct-memory objects |
+  | the nine views at `0x10_0000_0000` | map, and see the same memory through every alias |
+  | protection per view | a page made read-only through one view faults on write there, and stays writable through the raw view |
+  | no access on shared views (MMIO windows) | holds: such a page faults |
+  | decommit, then recommit | takes the access away, then gives it back with the contents kept |
+  | `sceKernelQueryMemoryProtection` on a view page | answers the whole 512 MiB view as one read-write range (`memory_ps5.cpp` keeps its own table) |
+
+  Two earlier runs as a payload had no direct memory to work with
+  (`sceKernelGetDirectMemorySize` answers 0 there, beside 8158 MiB of flexible memory),
+  so the guest's memory has to live in a title, which is where the game runs.
 - **The title**, [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle)
   (`PPSA99300`), made with PS5_VulkanTemplate's `new-title.py` and pinned to
   PS5_PayloadSDK `1de8b37` (section 8). For now its program is the memory test: the
   fork's `memory_ps5.cpp` and its test, compiled into the title
-  (`MEMORY_PS5_TEST_EMBEDDED`), writing `/app0/rexglue-memory-test.txt`. Every object
-  compiles with the title's flags under LLVM 18 and 20, and the test's symbols resolve
-  against what the title links. It has not been linked or run here, because the link
-  needs PS5_Vulkan's RADV archive.
+  (`MEMORY_PS5_TEST_EMBEDDED`), writing `/app0/rexglue-memory-test.txt`. Built here with
+  PS5_Vulkan `5b5e4fc`'s RADV (PS5_Mesa `7b59ef2`), installed in `/data/homebrew`, and
+  launched from the home screen, it ran the test above.
 
 **Not done**
 
@@ -114,10 +122,7 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Waiting on you**
 
-- **Run the memory test in the title.** In a PS5_EdgeOfTimeTitle checkout beside
-  PS5_Vulkan, PS5_Mesa, PS5_PayloadSDK and rexglue-sdk, `reeot/run-memory-test.sh`
-  builds, uploads and launches the title, then fetches the results file into
-  `klog/<run>/rexglue-memory-test.txt`. Its README has the setup. Send that file.
+- Nothing right now. M2 will need the game's files from your own copy (Step 0).
 
 ## Why this is feasible
 
@@ -277,11 +282,14 @@ direct memory:
 - **Anonymous allocations** are reservations committed in 64 KiB units
   (`ps5_vrange_commit`).
 
-Still to measure on the console:
+Measured on the console, in the title (Status has the numbers):
 
-- **No access on shared views.** PS5_RPCS3 saw the kernel refuse some protections on
-  views. MMIO windows (`Memory::AddVirtualMappedRange`) and decommits need it; the
-  test's run in the title shows whether it holds.
+- **No access on shared views holds.** PS5_RPCS3 saw the kernel refuse some protections
+  on views; these views accept it, so MMIO windows (`Memory::AddVirtualMappedRange`) and
+  decommits work as written.
+
+Still open:
+
 - **16 KiB pages.** The console's pages are 16 KiB, against the Xbox 360's 4 KiB.
   `xmemory.cpp` already has a path for host pages bigger than guest pages (around line
   918, there for Apple Silicon). Write-watches may fire more often at 16 KiB granularity
@@ -527,5 +535,5 @@ Keep this work in the fork unless upstream agrees to take it.
    `sigqueue`, `makecontext`/`swapcontext`. Use a probe like PS5_PayloadSDK's
    `src/probe.c`. *(Done: two console runs, [Status](#status).)*
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
-   model, and get M2. *(Written and tested on the host model; its run in the title
-   is next. M2 also needs the game.)*
+   model, and get M2. *(Done: all checks pass on the host model and, in the title, on
+   the console. M2 also needs the game.)*
