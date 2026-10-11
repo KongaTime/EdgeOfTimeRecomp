@@ -24,8 +24,8 @@ CFLAGS := -std=c11 -O1 -g -Wall -Werror -fno-omit-frame-pointer
 
 all: $(ELF)
 
-$(ELF): rexglue_probe.c
-	$(CC) $(CFLAGS) -o $@ $^
+$(ELF): rexglue_probe.c fiber_switch_x64.h
+	$(CC) $(CFLAGS) -o $@ $<
 
 clean:
 	rm -f $(ELF)

@@ -12,7 +12,7 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `3a81ea3` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `34231eb` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
 | [PS5_RPCS3](https://github.com/KongaTime/PS5_RPCS3) | `main` at `48f034b` |
@@ -50,7 +50,7 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 - **The ReXGlue runtime compiles for the PS5.** The fork's five commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `3a81ea3`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `34231eb`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -65,15 +65,23 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
   | `syscall(SYS_gettid)` | missing | `pthread_getthreadid_np` (exported) |
   | `pthread_setname_np` / `pthread_getname_np` | only in a module a title does not load / undeclared | `pthread_set_name_np` (exported); the thread keeps its own name |
   | `pthread_setaffinity_np` with `cpu_set_t` | `ERANGE` for FreeBSD's 32-byte set | the platform layer's `ps5_pthread_{get,set}affinity_np` |
-  | `getcontext` / `makecontext` / `swapcontext` | exported | fibers build unchanged |
+  | `getcontext` / `makecontext` / `swapcontext` | exported, but a made context is never entered (console run, below) | fibers are a stack switch of the fork's own (`src/core/fiber_switch_x64.h`) |
   | the machine context in a fault | FreeBSD's `mc_*`, 48 bytes later than FreeBSD says | the exception handler reads it through the SDK fork's `ucontext_t` |
   | floating-point `std::from_chars`, `clock_time_conversion`, `std::jthread` | missing from libc++ 18 (the last behind `-fexperimental-library`) | the macOS shims; `-fexperimental-library` |
 
-- **A console probe** for what only hardware can answer:
-  [`ps5/probe/`](../ps5/probe/rexglue_probe.c) checks thread-targeted signals, suspend
-  and resume, wakeups, emulated TLS inside a signal handler, fibers, page faults
-  (`SIGSEGV` or `SIGBUS`, `si_addr`, `mc_rip`, `mc_err`, the alternate stack) and the
-  floating-point state of new threads. It builds, and all its imports resolve.
+- **A console probe**, [`ps5/probe/`](../ps5/probe/rexglue_probe.c), for what only
+  hardware can answer. Its first run on the console (2026-10-11) showed:
+
+  | Checked | On the console | What changed |
+  | --- | --- | --- |
+  | `pthread_kill` with `SIGUSR1`/`SIGUSR2` | reaches the chosen thread; a thread parks in its handler and resumes; `SIGUSR2` cut a 2 s sleep to 100 ms; emulated TLS reads right inside a handler | nothing: the fork's thread changes hold |
+  | page faults | `SIGSEGV` for reads and writes; `si_addr`, `mc_rip` and `mc_err` (0x6 write, 0x4 read) right through the SDK fork's context; the handler on its alternate stack | `SIGBUS` left alone, as on Linux |
+  | page size | 16 KiB (`getpagesize`, `sysconf`) | — |
+  | a new thread's MXCSR | 0x9fc0: flush-to-zero and denormals-are-zero on | guest threads start with both off, as on desktop (`FPSCRRegister::InitHost`) |
+  | `makecontext` + `swapcontext` | the fiber never ran: every switch returned at once | fibers switch stacks themselves; tested on x86-64 Linux, and the probe now checks that switch |
+  | realtime signals | `SIGRTMIN+1` reaches a chosen thread | not needed |
+
+  The probe has been updated to test the new fiber switch; it needs a second run.
 
 **Not done**
 
@@ -86,8 +94,8 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Waiting on you**
 
-- Run `ps5/probe` on the console (`make test PS5_HOST=<address>`) and keep
-  `/data/rexglue-probe.txt`.
+- Run the updated `ps5/probe` on the console again (delete the old
+  `/data/rexglue-probe.txt` first), to confirm the new fiber switch there.
 
 ## Why this is feasible
 
@@ -288,17 +296,17 @@ left is to see them work on the console (`ps5/probe`):
 | `timer_create` with `SIGEV_THREAD_ID` | missing | not used: Linux only; elsewhere ReXGlue's own timer queue |
 | `syscall(SYS_gettid)` | missing | `pthread_getthreadid_np` |
 | `pthread_setaffinity_np` with `cpu_set_t` | `ERANGE` for FreeBSD's 32-byte set | `ps5_pthread_{get,set}affinity_np`. A title runs on CPUs 0–12; put the Xbox 360's six hardware threads on six separate cores. |
-| `makecontext` / `swapcontext` (fibers) | exported | unchanged |
+| `makecontext` / `swapcontext` (fibers) | exported, but a made context is never entered (the probe) | a stack switch of its own, `fiber_ps5.cpp` |
 
 More thread rules from PROBE.md and the porting skill:
 
 - **Stacks.** Guest threads already ask for 16 MiB host stacks (`xthread.cpp:433`).
   Every other thread (SDL audio, the render thread, ReXGlue's helpers) gets **64 KiB**
   unless it asks for more. Give each one an explicit size.
-- **Floating point.** Console threads start flush-to-zero (MXCSR 0x9fe0). ReXGlue's
-  generated code sets MXCSR itself (`include/rex/platform/fpscr.h`). Confirm every guest
-  thread sets the guest's initial state at entry, and set the IEEE state
-  (`ps5platform/fp.h`) on this repository's own threads that do float maths.
+- **Floating point.** Console threads start flush-to-zero and denormals-are-zero
+  (MXCSR 0x9fc0, measured). Guest threads now start with both off, as on desktop
+  (the fork's `FPSCRRegister::InitHost`); set the IEEE state (`ps5platform/fp.h`) on
+  this repository's own threads that do float maths.
 - **Thread-local storage.** It's emulated, about 3.4 ns per access. ReXGlue has 19
   `thread_local`s, including `thread_state_` and `current_xthread_tls_`. Watch for these
   in hot paths when profiling.
@@ -482,7 +490,7 @@ Keep this work in the fork unless upstream agrees to take it.
    replace. *(Done, and fixed: [Status](#status).)*
 6. **Probe the console** for what section 4 doesn't know yet: real-time signals,
    `sigqueue`, `makecontext`/`swapcontext`. Use a probe like PS5_PayloadSDK's
-   `src/probe.c`. *(Exports checked from the SDK's stubs; `ps5/probe` is written and
-   needs a console run.)*
+   `src/probe.c`. *(Done: one console run, [Status](#status). A second run checks the
+   new fiber switch.)*
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
    model, and get M2.
