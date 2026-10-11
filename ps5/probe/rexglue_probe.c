@@ -285,7 +285,11 @@ static void probe_fibers(void) {
   check(switch_a_count == rounds && switch_b_count == rounds, "6 the port's fiber switch round-trips");
   check(acc == expected, "6 callee-saved registers survive the switches");
   check(switch_a_aligned && switch_a_sse == 10.0f, "6 a new fiber's stack is 16-byte aligned (an SSE load works)");
-  check(read_mxcsr() == main_mxcsr && (switch_a_mxcsr & 0x6000u) == 0x6000u,
+  /* Compare the control bits only: the low six are sticky exception flags the
+   * CPU sets by itself (main's own timing arithmetic sets the precision flag,
+   * 0x20, between the two reads; the first console run tripped on exactly that) */
+  const uint32_t control = ~0x3fu;
+  check((read_mxcsr() & control) == (main_mxcsr & control) && (switch_a_mxcsr & 0x6000u) == 0x6000u,
         "6 each fiber keeps its own MXCSR");
   free(stack_a);
   free(stack_b);

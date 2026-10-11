@@ -70,7 +70,7 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
   | floating-point `std::from_chars`, `clock_time_conversion`, `std::jthread` | missing from libc++ 18 (the last behind `-fexperimental-library`) | the macOS shims; `-fexperimental-library` |
 
 - **A console probe**, [`ps5/probe/`](../ps5/probe/rexglue_probe.c), for what only
-  hardware can answer. Its first run on the console (2026-10-11) showed:
+  hardware can answer. Two runs on the console (2026-10-11) showed:
 
   | Checked | On the console | What changed |
   | --- | --- | --- |
@@ -78,10 +78,10 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
   | page faults | `SIGSEGV` for reads and writes; `si_addr`, `mc_rip` and `mc_err` (0x6 write, 0x4 read) right through the SDK fork's context; the handler on its alternate stack | `SIGBUS` left alone, as on Linux |
   | page size | 16 KiB (`getpagesize`, `sysconf`) | — |
   | a new thread's MXCSR | 0x9fc0: flush-to-zero and denormals-are-zero on | guest threads start with both off, as on desktop (`FPSCRRegister::InitHost`) |
-  | `makecontext` + `swapcontext` | the fiber never ran: every switch returned at once | fibers switch stacks themselves; tested on x86-64 Linux, and the probe now checks that switch |
+  | `makecontext` + `swapcontext` | the fiber never ran: `swapcontext` rejects the made context (`EINVAL`) | fibers switch stacks themselves |
+  | the fork's fiber switch (second run) | 100000 main→A→B→main round trips, 43 ns each; callee-saved registers intact; new stacks 16-byte aligned; each fiber keeps its own rounding mode | — |
   | realtime signals | `SIGRTMIN+1` reaches a chosen thread | not needed |
 
-  The probe has been updated to test the new fiber switch; it needs a second run.
 
 **Not done**
 
@@ -90,12 +90,8 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 - **The MMIO handler's instruction reads** (section 3): still read execute-only code.
 - **SDL3's PS5 backends**, plume's volk start, this repository's own PS5 changes, and the
   title (sections 6–8).
-- **Step 0** (the desktop build with game files) and every console run.
-
-**Waiting on you**
-
-- Run the updated `ps5/probe` on the console again (delete the old
-  `/data/rexglue-probe.txt` first), to confirm the new fiber switch there.
+- **Step 0** (the desktop build with game files), and running the runtime itself on the
+  console.
 
 ## Why this is feasible
 
@@ -490,7 +486,6 @@ Keep this work in the fork unless upstream agrees to take it.
    replace. *(Done, and fixed: [Status](#status).)*
 6. **Probe the console** for what section 4 doesn't know yet: real-time signals,
    `sigqueue`, `makecontext`/`swapcontext`. Use a probe like PS5_PayloadSDK's
-   `src/probe.c`. *(Done: one console run, [Status](#status). A second run checks the
-   new fiber switch.)*
+   `src/probe.c`. *(Done: two console runs, [Status](#status).)*
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
    model, and get M2.
