@@ -12,7 +12,8 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `963c477` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `40f75ce` |
+| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `44f4e65` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
 | [PS5_RPCS3](https://github.com/KongaTime/PS5_RPCS3) | `main` at `48f034b` |
@@ -48,9 +49,9 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Done**
 
-- **The ReXGlue runtime compiles for the PS5.** The fork's five commits on v0.10.0
+- **The ReXGlue runtime compiles for the PS5.** The fork's commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `963c477`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `40f75ce`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -94,18 +95,29 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
   memory is the other way round from a title's: 8158 MiB free. The rest of the test
   (the 512 MiB commit, per-view protection, no-access windows) has to run in a title,
   which is where the game will run.
+- **The title**, [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle)
+  (`PPSA99300`), made with PS5_VulkanTemplate's `new-title.py` and pinned to
+  PS5_PayloadSDK `1de8b37` (section 8). For now its program is the memory test: the
+  fork's `memory_ps5.cpp` and its test, compiled into the title
+  (`MEMORY_PS5_TEST_EMBEDDED`), writing `/app0/rexglue-memory-test.txt`. Every object
+  compiles with the title's flags under LLVM 18 and 20, and the test's symbols resolve
+  against what the title links. It has not been linked or run here, because the link
+  needs PS5_Vulkan's RADV archive.
 
 **Not done**
 
 - **The MMIO handler's instruction reads** (section 3): still read execute-only code.
 - **SDL3's PS5 backends**, plume's volk start, this repository's own PS5 changes, and the
-  title (sections 6–8).
+  title's real program, which starts the game (sections 6–8).
 - **Step 0** (the desktop build with game files), and running the runtime itself on the
   console.
 
 **Waiting on you**
 
-- The memory test has to run inside a title (step 4 below makes one).
+- **Run the memory test in the title.** In a PS5_EdgeOfTimeTitle checkout beside
+  PS5_Vulkan, PS5_Mesa, PS5_PayloadSDK and rexglue-sdk, `reeot/run-memory-test.sh`
+  builds, uploads and launches the title, then fetches the results file into
+  `klog/<run>/rexglue-memory-test.txt`. Its README has the setup. Send that file.
 
 ## Why this is feasible
 
@@ -181,7 +193,7 @@ This mirrors how PS5_RPCS3Title is put together:
 
 | Repository | What it is | New? |
 | --- | --- | --- |
-| `KongaTime/PS5_EdgeOfTimeTitle` | The title: the PS5_VulkanTemplate foundation (launch, pad, klog, packaging, build/deploy/run tools) plus `title_main.cpp`, which starts the game. Made with `ps5/tools/new-title.py`. | new |
+| [`KongaTime/PS5_EdgeOfTimeTitle`](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) | The title: the PS5_VulkanTemplate foundation (launch, pad, klog, packaging, build/deploy/run tools) plus `reeot/title_main.cpp`, which will start the game (for now it runs the memory test). Made with `ps5/tools/new-title.py`. | made |
 | `KongaTime/EdgeOfTimeRecomp` (this one) | `__PROSPERO__` changes and a `ps5` CMake preset. | existing |
 | [`KongaTime/rexglue-sdk`](https://github.com/KongaTime/rexglue-sdk) | Fork of `rexglue/rexglue-sdk` at v0.10.0. PS5 backends for memory, threads, faults and the app entry. Checked out as `../rexglue-sdk`, where `docs/BUILDING.md` already expects the SDK. | forked |
 | `KongaTime/PS5_SDL3` | Fork of `libsdl-org/SDL` (3.x). PS5 video, joystick and audio backends. | new fork |
@@ -269,7 +281,7 @@ Still to measure on the console:
 
 - **No access on shared views.** PS5_RPCS3 saw the kernel refuse some protections on
   views. MMIO windows (`Memory::AddVirtualMappedRange`) and decommits need it; the
-  console run of `ps5/tests` shows whether it holds.
+  test's run in the title shows whether it holds.
 - **16 KiB pages.** The console's pages are 16 KiB, against the Xbox 360's 4 KiB.
   `xmemory.cpp` already has a path for host pages bigger than guest pages (around line
   918, there for Apple Silicon). Write-watches may fire more often at 16 KiB granularity
@@ -506,7 +518,8 @@ Keep this work in the fork unless upstream agrees to take it.
    and `libsdl-org/SDL` as `KongaTime/PS5_SDL3`. *(ReXGlue: forked, with the PS5
    commits on `main`. SDL3: not yet.)*
 4. **Make the title** with `new-title.py`, and pin PS5_PayloadSDK `1de8b37` and
-   PS5_Vulkan as PS5_RPCS3Title does.
+   PS5_Vulkan as PS5_RPCS3Title does. *(Made: PS5_EdgeOfTimeTitle, `PPSA99300`,
+   running the memory test for now.)*
 5. **Cross-build ReXGlue unchanged** (`rexcore`, then `rexsystem` as a static library)
    with the SDK toolchain. Collect the errors: they're the list of platform code to
    replace. *(Done, and fixed: [Status](#status).)*
@@ -514,5 +527,5 @@ Keep this work in the fork unless upstream agrees to take it.
    `sigqueue`, `makecontext`/`swapcontext`. Use a probe like PS5_PayloadSDK's
    `src/probe.c`. *(Done: two console runs, [Status](#status).)*
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
-   model, and get M2. *(Written and tested on the host model; the console run of
-   `ps5/tests` is next. M2 also needs the title and the game.)*
+   model, and get M2. *(Written and tested on the host model; its run in the title
+   is next. M2 also needs the game.)*
