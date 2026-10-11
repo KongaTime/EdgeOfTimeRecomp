@@ -1,9 +1,10 @@
 # Porting EdgeOfTimeRecompiled to the PS5 (homebrew)
 
 > [!IMPORTANT]
-> This is a plan. Nothing in it has been built or run on a console yet. It covers an
-> **unofficial homebrew title** for a jailbroken PS5, built on my PS5 homebrew stack. It
-> is not a PlayStation Store release, and no game files are or will be included.
+> This is a plan, and the work has only just started: nothing has run on a console
+> yet ([Status](#status)). It covers an **unofficial homebrew title** for a jailbroken
+> PS5, built on my PS5 homebrew stack. It is not a PlayStation Store release, and no
+> game files are or will be included.
 
 Written 2026-10-11 against these revisions:
 
@@ -21,6 +22,7 @@ Written 2026-10-11 against these revisions:
 
 ## Contents
 
+- [Status](#status)
 - [Why this is feasible](#why-this-is-feasible)
 - [Step 0: the desktop build must show a picture](#step-0-the-desktop-build-must-show-a-picture)
 - [Optional shortcut: the Windows build under prospero-win](#optional-shortcut-the-windows-build-under-prospero-win)
@@ -38,6 +40,56 @@ Written 2026-10-11 against these revisions:
 - [Risks and open questions](#risks-and-open-questions)
 - [Licences and sharing](#licences-and-sharing)
 - [First steps](#first-steps)
+
+## Status
+
+As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a console.
+
+**Done**
+
+- **The ReXGlue runtime compiles for the PS5.** The fork's five commits (kept for now
+  in [`ps5/rexglue-patches/`](../ps5/rexglue-patches/README.md), on v0.10.0) build
+  `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  PS5_PayloadSDK `1de8b37` and clang 20.
+  [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
+  checkout.
+- **Every symbol the runtime imports resolves** against the modules a title links by
+  default and the SDK's static libraries. The script checks this after each build.
+- **Unknowns resolved from the SDK's stub libraries** (what the console exports):
+
+  | ReXGlue needs | On the console | What the fork does |
+  | --- | --- | --- |
+  | `pthread_sigqueue`, realtime signals | no `pthread_sigqueue`; `sigqueue` is FreeBSD's (aims at a process); `SIGRTMIN` is defined, delivery unproven | suspend and callback wakeups use `SIGUSR1`/`SIGUSR2` with `pthread_kill`, ReXGlue's macOS path |
+  | `timer_create` with `SIGEV_THREAD_ID` | missing | not needed: ReXGlue uses it only on Linux, and its own timer queue elsewhere |
+  | `syscall(SYS_gettid)` | missing | `pthread_getthreadid_np` (exported) |
+  | `pthread_setname_np` / `pthread_getname_np` | only in a module a title does not load / undeclared | `pthread_set_name_np` (exported); the thread keeps its own name |
+  | `pthread_setaffinity_np` with `cpu_set_t` | `ERANGE` for FreeBSD's 32-byte set | the platform layer's `ps5_pthread_{get,set}affinity_np` |
+  | `getcontext` / `makecontext` / `swapcontext` | exported | fibers build unchanged |
+  | the machine context in a fault | FreeBSD's `mc_*`, 48 bytes later than FreeBSD says | the exception handler reads it through the SDK fork's `ucontext_t` |
+  | floating-point `std::from_chars`, `clock_time_conversion`, `std::jthread` | missing from libc++ 18 (the last behind `-fexperimental-library`) | the macOS shims; `-fexperimental-library` |
+
+- **A console probe** for what only hardware can answer:
+  [`ps5/probe/`](../ps5/probe/rexglue_probe.c) checks thread-targeted signals, suspend
+  and resume, wakeups, emulated TLS inside a signal handler, fibers, page faults
+  (`SIGSEGV` or `SIGBUS`, `si_addr`, `mc_rip`, `mc_err`, the alternate stack) and the
+  floating-point state of new threads. It builds, and all its imports resolve.
+
+**Not done**
+
+- **Guest memory** (section 2): still `shm_open` views, which compile and link but
+  would be charged to the 448 MiB flexible budget. `memory_ps5.cpp` is next.
+- **The MMIO handler's instruction reads** (section 3): still read execute-only code.
+- **SDL3's PS5 backends**, plume's volk start, this repository's own PS5 changes, and the
+  title (sections 6–8).
+- **Step 0** (the desktop build with game files) and every console run.
+
+**Waiting on you**
+
+- Create the `KongaTime/PS5_ReXGlue` fork
+  ([`ps5/rexglue-patches/README.md`](../ps5/rexglue-patches/README.md)). The session that
+  did this work could not create repositories.
+- Run `ps5/probe` on the console (`make test PS5_HOST=<address>`) and keep
+  `/data/rexglue-probe.txt`.
 
 ## Why this is feasible
 
@@ -228,15 +280,17 @@ Also:
 
 ### 4. Threads
 
-`src/core/threading_posix.cpp` relies on Linux-specific pieces:
+`src/core/threading_posix.cpp` relied on Linux-specific pieces. The fork now handles
+each one (its commit "PS5: thread ids, names, affinity, signals and fibers"); what is
+left is to see them work on the console (`ps5/probe`):
 
-| ReXGlue uses | Line(s) | On the console |
+| ReXGlue uses (on Linux) | On the console | In the fork |
 | --- | --- | --- |
-| Real-time signals (`SIGRTMIN + n`) to suspend threads, resume them and run callbacks; `sigqueue` / `pthread_sigqueue` | 102–170, 871–882, 954, 987 | Unproven. Probe it first (below). If it fails, implement suspend and callbacks with condition variables at the guest's kernel calls. |
-| `timer_create` with `SIGEV_THREAD_ID` | 53 | Linux extension. Replace with a timer thread or `kqueue` `EVFILT_TIMER`, which PROBE.md shows working. Note PROBE.md's warning: re-submitting an `EVFILT_USER` with `EV_ADD` doesn't wake a waiter. |
-| `syscall(SYS_gettid)` | 59 | Use the console's own thread id (FreeBSD's `pthread_getthreadid_np`, if the console's libc exports it; check during the probe). |
-| `sched_setaffinity` / `pthread_setaffinity_np` with `cpu_set_t` | 778–815 | FreeBSD's 32-byte `cpu_set_t` gets `ERANGE`. Use `ps5_pthread_setaffinity_np`. A title runs on CPUs 0–12; put the Xbox 360's six hardware threads on six separate cores. |
-| `makecontext` / `swapcontext` (fibers) | `fiber_posix.cpp` | Check the console's libc has them. If not, write a small assembly context switch. |
+| Real-time signals (`SIGRTMIN + n`) with `pthread_sigqueue` to suspend threads and wake them for callbacks | no `pthread_sigqueue`; real-time delivery to a thread unproven | `SIGUSR1`/`SIGUSR2` with `pthread_kill`, ReXGlue's macOS path. The handlers need no payload. |
+| `timer_create` with `SIGEV_THREAD_ID` | missing | not used: Linux only; elsewhere ReXGlue's own timer queue |
+| `syscall(SYS_gettid)` | missing | `pthread_getthreadid_np` |
+| `pthread_setaffinity_np` with `cpu_set_t` | `ERANGE` for FreeBSD's 32-byte set | `ps5_pthread_{get,set}affinity_np`. A title runs on CPUs 0–12; put the Xbox 360's six hardware threads on six separate cores. |
+| `makecontext` / `swapcontext` (fibers) | exported | unchanged |
 
 More thread rules from PROBE.md and the porting skill:
 
@@ -374,9 +428,12 @@ PS5_RPCS3 does.
   repository moves to a newer SDK.
 - **Memory budget.** The 4.5 GiB guest mapping, RADV, textures and the heap all have to
   fit in about 12 GiB of direct memory (section 2).
-- **Thread signals.** Whether the console delivers real-time signals with `sigqueue` is
-  unknown. The fallback is a redesign of suspend and callbacks, not a one-line change
-  (section 4).
+- **Thread signals.** The fork no longer needs real-time signals (section 4), but
+  suspending a thread from its signal handler, and emulated TLS read inside one, are
+  unproven until `ps5/probe` runs.
+- **Code model.** ReXGlue compiles everything with `-mcmodel=large` on x86-64 outside
+  macOS (for executables over 35 MB). Whether the console's link recipe and native
+  tool accept that is untested; drop it on the PS5 if they don't.
 - **Shader-compile stalls.** RADV compiles pipelines when they're first used. This
   repository already has a pipeline pre-cache (`src/gpu/pipeline/pso_precache.cpp`).
   Make sure it runs during loading on the console, and keep RADV's disk cache in
@@ -418,14 +475,16 @@ Keep this work in the fork unless upstream agrees to take it.
 1. **M0.** Build `linux-amd64-release` here and play to the first level.
 2. **Optional.** Try the Windows `REEOT_D3D12=OFF` build under prospero-win.
 3. **Fork** `rexglue/rexglue-sdk` at `c94f5eb` (v0.10.0) as `KongaTime/PS5_ReXGlue`,
-   and `libsdl-org/SDL` as `KongaTime/PS5_SDL3`.
+   and `libsdl-org/SDL` as `KongaTime/PS5_SDL3`. *(ReXGlue's commits are written and
+   waiting in `ps5/rexglue-patches/`; the forks themselves are not made yet.)*
 4. **Make the title** with `new-title.py`, and pin PS5_PayloadSDK `1de8b37` and
    PS5_Vulkan as PS5_RPCS3Title does.
 5. **Cross-build ReXGlue unchanged** (`rexcore`, then `rexsystem` as a static library)
    with the SDK toolchain. Collect the errors: they're the list of platform code to
-   replace.
+   replace. *(Done, and fixed: [Status](#status).)*
 6. **Probe the console** for what section 4 doesn't know yet: real-time signals,
    `sigqueue`, `makecontext`/`swapcontext`. Use a probe like PS5_PayloadSDK's
-   `src/probe.c`.
+   `src/probe.c`. *(Exports checked from the SDK's stubs; `ps5/probe` is written and
+   needs a console run.)*
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
    model, and get M2.

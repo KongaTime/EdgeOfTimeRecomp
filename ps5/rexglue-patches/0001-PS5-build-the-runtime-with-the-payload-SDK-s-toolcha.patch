@@ -1,0 +1,214 @@
+From fdc5bdc2a4b0a31c61be3d658cac6c8fd7441489 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 19:13:37 +0000
+Subject: [PATCH 1/5] PS5: build the runtime with the payload SDK's toolchain
+
+The PS5 (payload SDK homebrew) as a ReXGlue target. PS5_PayloadSDK's CMake
+toolchain sets PROSPERO and the compiler defines __PROSPERO__, from which
+include/rex/platform.h defines REX_PLATFORM_PS5.
+
+- rexruntime is a static library on the console: a title is one executable,
+  the console has no dlopen and its native tool refuses exported symbols.
+- No Xenos GPU plugin (loaded at run time), codegen or rexglue CLI (they run
+  on the build host); no install rules.
+- No X11/Wayland (pkg-config, surface_gnulinux.cpp); no librt/libdl.
+- -fexperimental-library: the SDK's libc++ 18 keeps std::jthread and
+  std::stop_token behind it.
+- FFmpeg: a configuration for the console (ffmpeg-overlay/ps5/config.h), the
+  Linux x86_64 one less what the console's headers and libc lack.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0136zBnRC7dbQro6PQoycWYT
+---
+ CMakeLists.txt                         | 13 ++++++--
+ include/rex/platform.h                 |  7 +++++
+ src/core/CMakeLists.txt                |  3 ++
+ src/system/CMakeLists.txt              |  8 ++++-
+ src/ui/CMakeLists.txt                  |  5 ++-
+ thirdparty/CMakeLists.txt              |  7 +++++
+ thirdparty/ffmpeg-overlay/ps5/config.h | 43 ++++++++++++++++++++++++++
+ 7 files changed, 82 insertions(+), 4 deletions(-)
+ create mode 100644 thirdparty/ffmpeg-overlay/ps5/config.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9b3cdf5..d575fd3 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -158,6 +158,14 @@ if(WIN32)
+         message(FATAL_ERROR "Unsupported Windows architecture: ${REX_TARGET_PROCESSOR}")
+     endif()
+     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
++elseif(PROSPERO)
++    # PS5 homebrew, built with the payload SDK's toolchain (toolchain/prospero.cmake
++    # sets PROSPERO). FreeBSD-like underneath but not Linux: include/rex/platform.h
++    # defines REX_PLATFORM_PS5 from the compiler's __PROSPERO__.
++    set(REX_PLATFORM "ps5-amd64")
++    # The SDK's libc++ 18 keeps std::jthread and std::stop_token (timer_queue.cpp)
++    # behind -fexperimental-library; a title links libc++experimental.a.
++    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexperimental-library>)
+ elseif(UNIX AND NOT APPLE)
+     if(REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
+         set(REX_PLATFORM "linux-amd64")
+@@ -285,8 +293,9 @@ message(STATUS "  Tracy: ${REXGLUE_ENABLE_TRACY}")
+ message(STATUS "  Perf Counters: ${REXGLUE_ENABLE_PERF_COUNTERS}")
+ message(STATUS "===========================================")
+ 
+-# SDK install/export rules (skipped when consumed as a subdirectory)
+-if(PROJECT_IS_TOP_LEVEL)
++# SDK install/export rules (skipped when consumed as a subdirectory, and for the
++# PS5, whose static runtime is only ever linked into a title from a build tree)
++if(PROJECT_IS_TOP_LEVEL AND NOT PROSPERO)
+     include(cmake/rexglue_devenv.cmake)
+     include(cmake/rexglue_install.cmake)
+ else()
+diff --git a/include/rex/platform.h b/include/rex/platform.h
+index e90418d..5f7ab64 100644
+--- a/include/rex/platform.h
++++ b/include/rex/platform.h
+@@ -38,6 +38,10 @@
+ #elif defined(__gnu_linux__)
+ #define REX_PLATFORM_GNU_LINUX 1
+ #define REX_PLATFORM_LINUX 1
++#elif defined(__PROSPERO__)
++// PS5 homebrew (the payload SDK). FreeBSD-like underneath, so it also defines
++// __FreeBSD__ and __unix__, but it is not Linux.
++#define REX_PLATFORM_PS5 1
+ #else
+ #error Unsupported target OS.
+ #endif
+@@ -59,6 +63,9 @@
+ #ifndef REX_PLATFORM_LINUX
+ #define REX_PLATFORM_LINUX 0
+ #endif
++#ifndef REX_PLATFORM_PS5
++#define REX_PLATFORM_PS5 0
++#endif
+ 
+ #if defined(__clang__)
+ #define REX_COMPILER_CLANG 1
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 1ddafd0..fc6b93e 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -100,6 +100,9 @@ target_include_directories(rexcore PRIVATE
+ 
+ if(APPLE)
+     target_link_libraries(rexcore PRIVATE pthread)
++elseif(PROSPERO)
++    # PS5: pthreads are in the SDK's libc and libkernel, which the compiler
++    # wrapper links; there is no librt or libdl.
+ elseif(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index fc46d86..4648190 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -48,7 +48,13 @@ set(REXSYSTEM_SOURCES
+     xex_module.cpp
+ )
+ 
+-add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
++# PS5: a title is one executable; the console has no dlopen, and its native tool
++# refuses a title that exports symbols, so the runtime links in statically.
++if(PROSPERO)
++    add_library(rexruntime STATIC ${REXSYSTEM_SOURCES})
++else()
++    add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
++endif()
+ add_library(rex::runtime ALIAS rexruntime)
+ add_library(rex::system ALIAS rexruntime)
+ add_library(rex::kernel ALIAS rexruntime)
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..282d4e5 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -72,6 +72,9 @@ elseif(APPLE)
+     set(REXUI_PLATFORM_SOURCES
+         surface_mac.cpp
+     )
++elseif(PROSPERO)
++    # PS5: no window system, so no X11/Wayland surfaces (window_sdl.cpp)
++    set(REXUI_PLATFORM_SOURCES)
+ else()
+     set(REXUI_PLATFORM_SOURCES
+         surface_gnulinux.cpp
+@@ -146,7 +149,7 @@ if(REXGLUE_USE_VULKAN)
+ endif()
+ 
+ # Platform-specific dependencies
+-if(UNIX AND NOT APPLE)
++if(UNIX AND NOT APPLE AND NOT PROSPERO)
+     find_package(PkgConfig REQUIRED)
+     pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+     # Required, not optional: vulkan/api.h pulls in <wayland-client.h> on every
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index f102b56..60b818a 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -695,6 +695,13 @@ if(WIN32)
+     target_link_libraries(libavcodec PRIVATE bcrypt)
+ endif()
+ 
++# PS5: FFmpeg ships no configuration for the console; ffmpeg-overlay/ps5/config.h
++# is found ahead of FFmpeg's own config.h.
++if(PROSPERO)
++    target_include_directories(libavutil BEFORE PRIVATE "${FFMPEG_OVERLAY_SRC_DIR}/ps5")
++    target_include_directories(libavcodec BEFORE PRIVATE "${FFMPEG_OVERLAY_SRC_DIR}/ps5")
++endif()
++
+ # Hidden visibility is required on aarch64. The NEON .S files use ADRP/ADD
+ # PC-relative addressing (movrel) for symbols like ff_cos_*, which the linker
+ # only accepts against locally bound symbols when emitting a shared object.
+diff --git a/thirdparty/ffmpeg-overlay/ps5/config.h b/thirdparty/ffmpeg-overlay/ps5/config.h
+new file mode 100644
+index 0000000..4b64c86
+--- /dev/null
++++ b/thirdparty/ffmpeg-overlay/ps5/config.h
+@@ -0,0 +1,43 @@
++/*
++ * FFmpeg's configuration for the PS5 (payload SDK homebrew, x86_64-sie-ps5).
++ *
++ * The bundled FFmpeg carries a configuration per desktop platform and none for
++ * the console (thirdparty/FFmpeg/config.h stops with "no config"). The console
++ * is FreeBSD-like on a Zen 2, so this takes the Linux x86_64 configuration and
++ * turns off what the console's headers and libc lack. Only libavutil and
++ * libavcodec are built, for XMA (WMA Pro) decoding. thirdparty/CMakeLists.txt
++ * puts this directory ahead of FFmpeg's own on the PS5.
++ */
++#ifndef REX_FFMPEG_PS5_CONFIG_H
++#define REX_FFMPEG_PS5_CONFIG_H
++
++#include "config_linux_x86_64.h"
++
++#undef OS_NAME
++#define OS_NAME freebsd
++
++/* Linux headers the console does not have */
++#undef HAVE_ASM_TYPES_H
++#define HAVE_ASM_TYPES_H 0
++#undef HAVE_LINUX_PERF_EVENT_H
++#define HAVE_LINUX_PERF_EVENT_H 0
++#undef HAVE_SYS_SOUNDCARD_H
++#define HAVE_SYS_SOUNDCARD_H 0
++
++/* libc functions no module a title loads exports (the SDK's stubs);
++ * cpu.c then counts CPUs with sysconf, which the platform layer answers */
++#undef HAVE_SCHED_GETAFFINITY
++#define HAVE_SCHED_GETAFFINITY 0
++#undef HAVE_GLOB
++#define HAVE_GLOB 0
++/* No iconv in the console's libc (subtitle charset conversion only) */
++#undef CONFIG_ICONV
++#define CONFIG_ICONV 0
++/* FreeBSD's <malloc.h> is an #error pointing at <stdlib.h> */
++#undef HAVE_MALLOC_H
++#define HAVE_MALLOC_H 0
++/* Only for coloured log output; the console has no terminal */
++#undef HAVE_ISATTY
++#define HAVE_ISATTY 0
++
++#endif /* REX_FFMPEG_PS5_CONFIG_H */
+-- 
+2.43.0
+

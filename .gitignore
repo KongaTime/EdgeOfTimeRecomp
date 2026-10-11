@@ -84,3 +84,6 @@ __pycache__/
 /reillymodtest
 /extracted
 /rips
+
+# PS5: the payload SDK and other dependencies ps5/tools installs
+/.deps/
