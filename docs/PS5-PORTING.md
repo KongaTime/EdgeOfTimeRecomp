@@ -12,7 +12,7 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `0435374` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `963c477` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
 | [PS5_RPCS3](https://github.com/KongaTime/PS5_RPCS3) | `main` at `48f034b` |
@@ -50,7 +50,7 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 - **The ReXGlue runtime compiles for the PS5.** The fork's five commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `0435374`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `963c477`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -86,8 +86,10 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 - **Guest memory in direct memory** (section 2): the fork's `src/core/memory_ps5.cpp`.
   Its test, `ps5/tests/memory_ps5_test.cpp` in the fork, lays the arena out as
   `Memory::Initialize` does and passes all 42 checks on PS5_PayloadSDK's host model of
-  the kernel, failure injection included. It also builds as a console payload, not yet
-  run.
+  the kernel, failure injection included. Its first console run, as a payload, mapped
+  the arena at `0x10_0000_0000` and showed the aliases working, but the console refused
+  direct memory after 27 of the physical heap's 256 chunks (54 MiB). A payload's process
+  likely gets far less direct memory than a title's 12 GiB; the test now measures that.
 
 **Not done**
 
@@ -99,10 +101,10 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 **Waiting on you**
 
-- Run the fork's memory test on the console (`ps5/tests/memory_ps5_test.elf`, sent the
-  same way as `ps5/probe`) and keep `/data/rexglue-memory-test.txt`. It answers whether
-  the console accepts no-access protection on shared views, which MMIO windows and
-  decommits need.
+- Run the updated memory test on the console (delete the old
+  `/data/rexglue-memory-test.txt` first). It reports how much direct memory a payload's
+  process gets. If that is the limit, the test has to run inside a title, which is also
+  where the game will run.
 
 ## Why this is feasible
 
