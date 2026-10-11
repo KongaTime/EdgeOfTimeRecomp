@@ -12,7 +12,7 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `34231eb` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `0435374` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
 | [PS5_RPCS3](https://github.com/KongaTime/PS5_RPCS3) | `main` at `48f034b` |
@@ -50,7 +50,7 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
 
 - **The ReXGlue runtime compiles for the PS5.** The fork's five commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `34231eb`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `0435374`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -83,15 +83,26 @@ As of 2026-10-11. Everything here was done on a Linux PC; nothing has run on a c
   | realtime signals | `SIGRTMIN+1` reaches a chosen thread | not needed |
 
 
+- **Guest memory in direct memory** (section 2): the fork's `src/core/memory_ps5.cpp`.
+  Its test, `ps5/tests/memory_ps5_test.cpp` in the fork, lays the arena out as
+  `Memory::Initialize` does and passes all 42 checks on PS5_PayloadSDK's host model of
+  the kernel, failure injection included. It also builds as a console payload, not yet
+  run.
+
 **Not done**
 
-- **Guest memory** (section 2): still `shm_open` views, which compile and link but
-  would be charged to the 448 MiB flexible budget. `memory_ps5.cpp` is next.
 - **The MMIO handler's instruction reads** (section 3): still read execute-only code.
 - **SDL3's PS5 backends**, plume's volk start, this repository's own PS5 changes, and the
   title (sections 6–8).
 - **Step 0** (the desktop build with game files), and running the runtime itself on the
   console.
+
+**Waiting on you**
+
+- Run the fork's memory test on the console (`ps5/tests/memory_ps5_test.elf`, sent the
+  same way as `ps5/probe`) and keep `/data/rexglue-memory-test.txt`. It answers whether
+  the console accepts no-access protection on shared views, which MMIO windows and
+  decommits need.
 
 ## Why this is feasible
 
@@ -230,24 +241,36 @@ That won't work on the console as written:
 - Large ranges are only granted from `0x10_0000_0000` upward, exactly at the address
   asked for or not at all (PROBE.md, "Virtual space").
 
-**Do what PS5_RPCS3 did.** Its `rpcs3/util/vm_native_ps5.cpp` replaces RPCS3's POSIX
-memory backend with `ps5platform/shm.h`: one direct-memory object, mapped several times
-inside a range reserved at `0x10_0000_0000`, charged once to the 12 GiB direct pool.
-Write a `memory_ps5.cpp` for ReXGlue the same way, covering `CreateFileMappingHandle`,
-`MapFileView`, `AllocFixed`, `Protect`, `QueryProtect` and `page_size()` (0x4000), and
-make `Memory::Initialize` reserve its base with `ps5_vrange_reserve_at`.
+**Done in the fork: `src/core/memory_ps5.cpp`**, on PS5_PayloadSDK's platform layer, in
+direct memory:
 
-Two things to check:
+- **The arena is backed as it is committed.** The 4.5 GiB mapping is cut into 2 MiB
+  chunks. Each is a direct-memory object (`ps5_shm_create`) made the first time a commit
+  touches it, then mapped into every view that covers it (`ps5_shm_map`), so the aliases
+  see the same bytes. The physical heap's 512 MiB, committed at start-up and seen through
+  five views, is 256 chunks and 1280 mappings; the rest costs what the game commits, not
+  4.5 GiB. Uncommitted parts of a view stay reserved with no access, as on Windows.
+- **The arena sits at `0x10_0000_0000`.** Each view reserves its range exactly there
+  (`ps5_vrange_reserve_at`), and `Memory::Initialize` starts its base search at `1 << 36`
+  on the PS5.
+- **Protection is tracked per view page.** ReXGlue reads a page's protection and restores
+  it later (`xmemory.cpp:1155`, the MMIO handler's race check), and the console's
+  `sceKernelQueryMemoryProtection` does not always describe views (PS5_RPCS3's notes).
+  A wrong answer there would leave guest memory with no access.
+- **Failures unwind.** A chunk whose mapping into some view fails is backed out
+  completely.
+- **Anonymous allocations** are reservations committed in 64 KiB units
+  (`ps5_vrange_commit`).
 
-- **Budget.** If the whole 4.5 GiB has to be backed up front, that's over a third of
-  direct memory, before RADV, textures (including the bundled upscaled textures) and the
-  heap. The Xbox 360 only had 512 MiB of physical memory. See whether the virtual heaps
-  can be committed on demand instead (`ps5_vrange_commit`, 64 KiB units, about 30 µs
-  each).
+Still to measure on the console:
+
+- **No access on shared views.** PS5_RPCS3 saw the kernel refuse some protections on
+  views. MMIO windows (`Memory::AddVirtualMappedRange`) and decommits need it; the
+  console run of `ps5/tests` shows whether it holds.
 - **16 KiB pages.** The console's pages are 16 KiB, against the Xbox 360's 4 KiB.
   `xmemory.cpp` already has a path for host pages bigger than guest pages (around line
-  918, there for Apple Silicon). Check that write-watches still work at 16 KiB
-  granularity. They may fire more often (a performance cost, not a correctness one).
+  918, there for Apple Silicon). Write-watches may fire more often at 16 KiB granularity
+  (a performance cost, not a correctness one).
 
 The link recipe already moves `malloc` into the direct-memory heap
 (`ps5platform/heap.h`).
@@ -488,4 +511,5 @@ Keep this work in the fork unless upstream agrees to take it.
    `sigqueue`, `makecontext`/`swapcontext`. Use a probe like PS5_PayloadSDK's
    `src/probe.c`. *(Done: two console runs, [Status](#status).)*
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
-   model, and get M2.
+   model, and get M2. *(Written and tested on the host model; the console run of
+   `ps5/tests` is next. M2 also needs the title and the game.)*
