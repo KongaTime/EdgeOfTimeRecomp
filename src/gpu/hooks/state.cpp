@@ -2,6 +2,7 @@
 // Copyright Rien Gupta <rgupta9@scu.edu>
 // BSD 3-Clause
 
+#include <atomic>
 #include <cstring>
 
 #include <rex/hook.h>
@@ -494,6 +495,17 @@ extern "C" REX_FUNC(D3DDevice_SetGammaRamp) {
   FlushPendingUpDraw();
   const u32 device = ctx.r3.u32;
   const u32 ramp = ctx.r4.u32;
+#if defined(__PROSPERO__)
+  // The PS5's first boots reached the render thread's gamma ramp with no device
+  // (run 9, 2026-10-12): the game's own code writes the ramp into the device
+  // (kDeviceGammaShadow), so it is skipped rather than written at address 0
+  if (!device) {
+    static std::atomic<int> skipped{0};
+    if (skipped.fetch_add(1) < 4)
+      EOT_WARN("[gamma] D3DDevice_SetGammaRamp with no device (ramp {:#x}); skipped", ramp);
+    return;
+  }
+#endif
   __imp__D3DDevice_SetGammaRamp(ctx, base);
   EOT_TRACE_CALL("SetGammaRamp ramp={:#x}", ramp);
   if (!ramp || !device)
@@ -515,6 +527,17 @@ extern "C" REX_FUNC(D3DDevice_SetPWLGamma) {
   FlushPendingUpDraw();
   const u32 device = ctx.r3.u32;
   const u32 ramp = ctx.r4.u32;
+#if defined(__PROSPERO__)
+  // The PS5's first boots reached the render thread's gamma ramp with no device
+  // (run 9, 2026-10-12): the game's own code writes the ramp into the device
+  // (kDeviceGammaShadow), so it is skipped rather than written at address 0
+  if (!device) {
+    static std::atomic<int> skipped{0};
+    if (skipped.fetch_add(1) < 4)
+      EOT_WARN("[gamma] D3DDevice_SetPWLGamma with no device (ramp {:#x}); skipped", ramp);
+    return;
+  }
+#endif
   __imp__D3DDevice_SetPWLGamma(ctx, base);
   EOT_TRACE_CALL("SetPWLGamma ramp={:#x}", ramp);
   if (!ramp || !device)
