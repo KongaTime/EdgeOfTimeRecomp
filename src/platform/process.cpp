@@ -4,7 +4,9 @@
 
 #include "platform/process.h"
 
+#if !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
+#endif
 #include <rex/filesystem.h>
 
 #include "core/logging.h"
@@ -57,7 +59,11 @@ void ReleaseInstanceLock() {
 }
 
 bool SpawnProcess(const std::filesystem::path &exe) {
-#if defined(_WIN32)
+#if defined(__PROSPERO__)
+  // A title starts no other process: the player relaunches it from the home screen
+  EOT_WARN("[process] cannot start {} on the PS5; relaunch the game from the home screen", exe.string());
+  return false;
+#elif defined(_WIN32)
   std::wstring cmdline = L"\"" + exe.wstring() + L"\"";
   int argc = 0;
   if (LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc)) {
@@ -158,7 +164,9 @@ bool InAppBundle() {
 }
 
 bool AcquireInstanceLock() {
-#if defined(_WIN32)
+#if defined(__PROSPERO__)
+  return true; // the console runs one copy of a title
+#elif defined(_WIN32)
   HANDLE h = ::CreateMutexW(nullptr, FALSE, kInstanceLockName);
   if (!h) {
     EOT_WARN("[process] instance lock unavailable (error {})", ::GetLastError());
@@ -205,11 +213,13 @@ std::filesystem::path LaunchPath() {
 bool RelaunchSelf() { return SpawnReplacement(LaunchPath()); }
 
 void RaiseMainWindow() {
+#if !defined(__PROSPERO__) // the PS5's one display is always in front
   int count = 0;
   SDL_Window **windows = SDL_GetWindows(&count);
   if (windows && count > 0)
     SDL_RaiseWindow(windows[0]);
   SDL_free(windows);
+#endif
 }
 
 }

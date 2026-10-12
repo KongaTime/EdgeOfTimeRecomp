@@ -6,7 +6,9 @@
 
 #include <string>
 
+#if !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
+#endif
 
 #include "core/encoding.h"
 #include "core/logging.h"
@@ -16,6 +18,8 @@
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <pthread.h>
+#elif defined(__PROSPERO__)
+#include <rex/ui/startup_prospero.h>
 #endif
 
 namespace eot::platform {
@@ -40,6 +44,22 @@ void ShowModal(std::string_view title, std::string_view body, bool warning) {
 void ShowInfoModal(std::string_view title, std::string_view body) {
   MessageBoxW(nullptr, Utf8ToWide(std::string(body)).c_str(), Utf8ToWide(std::string(title)).c_str(),
               MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+}
+
+#elif defined(__PROSPERO__)
+
+// A title has no window system to show these: each goes to the title's startup
+// log (its results file and klog) beside the log line its caller wrote, and a
+// choice takes its decline
+void ShowModal(std::string_view title, std::string_view body, bool warning) {
+  const std::string line = std::string(warning ? "warning: " : "fatal: ") + std::string(title) + ": " +
+                           std::string(body);
+  prospero_startup_log(line.c_str());
+}
+
+void ShowInfoModal(std::string_view title, std::string_view body) {
+  const std::string line = "info: " + std::string(title) + ": " + std::string(body);
+  prospero_startup_log(line.c_str());
 }
 
 #else
@@ -106,6 +126,18 @@ void ShowInfoModal(std::string_view title, std::string_view body) {
 
 #endif
 
+#if defined(__PROSPERO__)
+enum SDL_MessageBoxFlags { SDL_MESSAGEBOX_ERROR, SDL_MESSAGEBOX_WARNING, SDL_MESSAGEBOX_INFORMATION };
+
+bool ShowChoice(std::string_view title, std::string_view body, std::string_view accept, std::string_view decline,
+                SDL_MessageBoxFlags flags, rex::ui::Window *) {
+  const std::string line = "choice (" + std::string(decline) + " taken over " + std::string(accept) + "): " +
+                           std::string(title) + ": " + std::string(body);
+  prospero_startup_log(line.c_str());
+  (void)flags;
+  return false;
+}
+#else
 constexpr int kDeclineButtonId = 0;
 constexpr int kAcceptButtonId = 1;
 
@@ -137,6 +169,7 @@ bool ShowChoice(std::string_view title, std::string_view body, std::string_view 
   }
   return button_id == kAcceptButtonId;
 }
+#endif
 
 }
 

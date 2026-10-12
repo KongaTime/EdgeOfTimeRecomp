@@ -687,6 +687,25 @@ Keep this work in the fork unless upstream agrees to take it.
     (the title's `reeot/results/2026-10-12-test5.txt`) made a 3840×2160 swap chain of
     three B8G8R8A8 images on the display and presented 244 frames in four seconds, the
     display's 60 Hz, clearing to each color in turn.)*
+
+    *(This repository's own sources: 54 of the 58 the desktop build compiles now compile
+    for the PS5 with the payload SDK's clang. The SDL users have PS5 branches. The
+    renderer takes the display's size, and the display is 3840×2160 at 60 Hz. There
+    are no window flags or keyboard on the PS5, so the free camera is controller only.
+    Dialogs go to the title's startup log and decline any choice. The language comes
+    from the console's system language (`sceSystemServiceParamGetInt`). No process is
+    spawned. The mod manager points at its mods folder instead of a file browser.
+    Three fixes are for the PS5's toolchain: an `atomic_ref` its libc++ lacks, a
+    thread-local that wants more than its 32-byte alignment, and
+    `pthread_set_name_np`. `file_dialog.cpp` and `self_install.cpp` serve only the
+    installer and stay out.*
+
+    *Left: `main.cpp` and `reeot_app.cpp`, the app and its start-up. They need the
+    game's generated code (step 11) and a ReXGlue newer than v0.10.0. This repository's
+    CI builds against `nightly-20261002-bd833a2a`, and `reeot_app.cpp` overrides
+    `OnConfigureLogging`, which upstream added after v0.10.0 (`b971840`). The fork has
+    to take that nightly first; 6 of its 63 changed files are files the fork's PS5
+    work touches.)*
 11. **The game's code and files** (Step 0, then M2): `rexglue codegen` from your own
     copy, built for the PS5, and the game folder copied into the title's. Later, a
     builder like the Simpsons port's could do this from a disc image.
