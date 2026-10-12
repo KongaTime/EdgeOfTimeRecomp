@@ -13,7 +13,8 @@ Written 2026-10-11 against these revisions:
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
 | [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `b84a414` |
-| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `6f90a64` |
+| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `b142389` |
+| [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
 | [PS5_RPCS3](https://github.com/KongaTime/PS5_RPCS3) | `main` at `48f034b` |
@@ -26,6 +27,7 @@ Written 2026-10-11 against these revisions:
 
 - [Status](#status)
 - [Why this is feasible](#why-this-is-feasible)
+- [A working reference: The Simpsons Game on the PS5](#a-working-reference-the-simpsons-game-on-the-ps5)
 - [Step 0: the desktop build must show a picture](#step-0-the-desktop-build-must-show-a-picture)
 - [Optional shortcut: the Windows build under prospero-win](#optional-shortcut-the-windows-build-under-prospero-win)
 - [The native title](#the-native-title)
@@ -35,7 +37,7 @@ Written 2026-10-11 against these revisions:
     - [3. The fault handler](#3-the-fault-handler)
     - [4. Threads](#4-threads)
     - [5. Files](#5-files)
-    - [6. Display, controller and sound (SDL3)](#6-display-controller-and-sound-sdl3)
+    - [6. Display, controller and sound](#6-display-controller-and-sound)
     - [7. EdgeOfTimeRecomp's desktop code](#7-edgeoftimerecomps-desktop-code)
     - [8. The title shell](#8-the-title-shell)
 - [Milestones](#milestones)
@@ -108,9 +110,10 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
   (`PPSA99300`), made with PS5_VulkanTemplate's `new-title.py` and pinned to
   PS5_PayloadSDK `1de8b37` (section 8). For now its program is the memory test: the
   fork's `memory_ps5.cpp` and its test, compiled into the title
-  (`MEMORY_PS5_TEST_EMBEDDED`), writing `/app0/rexglue-memory-test.txt`. Built here with
-  PS5_Vulkan `5b5e4fc`'s RADV (PS5_Mesa `7b59ef2`), installed in `/data/homebrew`, and
-  launched from the home screen, it ran the test above.
+  (`MEMORY_PS5_TEST_EMBEDDED`). Built here with PS5_Vulkan `5b5e4fc`'s RADV (PS5_Mesa
+  `7b59ef2`), installed in `/data/homebrew`, and launched from the home screen, it ran
+  the test above. Its second build (`b142389`) adds the code read check (section 3);
+  both write `/app0/reeot-test-results.txt`.
 
 **Not done**
 
@@ -122,7 +125,10 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 **Waiting on you**
 
-- Nothing right now. M2 will need the game's files from your own copy (Step 0).
+- **Run test app 2** (the title at `b142389`, sent as a zip with its HOW-TO): copy it to
+  `/data/homebrew/PPSA99300/`, launch it, and send `reeot-test-results.txt` from that
+  folder. It may close with an error at the end; that is one of the answers.
+- Later, M2 will need the game's files from your own copy (Step 0).
 
 ## Why this is feasible
 
@@ -142,12 +148,66 @@ What's left is platform code, in three places:
 
 1. **The ReXGlue SDK's runtime:** memory, threads, faults and files, all written for
    Linux, macOS and Windows.
-2. **SDL3:** the window, controller and sound for ReXGlue, plume and this repository.
+2. **The window, controller and sound.** ReXGlue's are SDL3's on the desktop. The
+   Simpsons Game's PS5 port has PS5 ones for ReXGlue already (next section); this
+   repository's own SDL3 uses and plume's surface remain.
 3. **This repository's desktop features:** the installer, file dialogs, desktop
    shortcuts, the update check and so on.
 
 Most of these problems have already been solved somewhere in my stack. The sections
 below name where.
+
+## A working reference: The Simpsons Game on the PS5
+
+[TheSimpsonsGame-PS5-Builder](https://github.com/LoZazaMastro/TheSimpsonsGame-PS5-Builder)
+(LoZazaMastro; forked as
+[KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder),
+read at `59e7086`) is a native PS5 port of another Xbox 360 recompilation,
+[TheSimpsonsGameRecomp](https://github.com/YesterMester/TheSimpsonsGameRecomp), on
+**ReXGlue** too. It runs on the same stack: PS5_PayloadSDK's platform layer, RADV from
+PS5_Mesa with its VideoOut display, ShadowMountPlus. Its README reports 4K output,
+120 Hz and an in-game settings menu. A Windows builder turns the player's own disc
+image into a finished `PPSA74207` folder.
+
+Its copy of ReXGlue (`tools/rexglue-sdk`) is v0.8.0 with 83 new files and 177 changed
+ones. The PS5 part of that is a complete app layer for ReXGlue, under ReXGlue's own
+BSD-3-Clause licence, which is what this repository is built on (`rex::ui::WindowedApp`,
+`WindowedAppContext`, `Window`, ReXGlue's audio and input systems):
+
+| What this plan needs | In the Simpsons port (`tools/rexglue-sdk/`) |
+| --- | --- |
+| The app's entry and window (section 6) | `src/ui/windowed_app_main_prospero.cpp` (ReXGlue's `main()` on the PS5), `windowed_app_context_prospero.cpp`, `window_prospero.cpp`, `startup_prospero.h` |
+| The display: a Vulkan surface on RADV (section 6) | `src/ui/surface_prospero.cpp` (a fixed 3840×2160 surface), `src/ui/vulkan/vulkan_display_prospero.cpp` (`VK_KHR_display` on PS5_Mesa's VideoOut WSI) |
+| Sound (section 6) | `src/audio/prospero/` (`sceAudioOut`) |
+| The controller (section 6) | `src/input/prospero/` (`scePad`, with a pad mapping) |
+| Files, settings, saves (section 5) | `src/ui/prospero_paths.cpp`, `src/core/settings_store_prospero.cpp`, the PS5 branch of `host_path_file.cpp` |
+| Fault and crash reports (section 3) | `src/core/exception_handler_prospero.cpp`, `fault_prospero.cpp`, `abort_prospero.cpp`, `trace_prospero.cpp`, `signal_thread_prospero.cpp` |
+| An in-game settings menu (M6) | `src/ui/overlay/settings_prospero.cpp` (L1 + R1 + Options) |
+
+The plan takes those, ported to v0.10.0, in place of writing them. What it does not take:
+
+- **Guest memory and fibers.** Its `memory_prospero.cpp` backs the whole 4.5 GiB arena
+  with one direct-memory object up front ("the full 4.5 GiB budget remain[s]
+  unvalidated", its header says). This fork's `memory_ps5.cpp` backs it as it is
+  committed and passed on the console (section 2). The fork's fibers and floating-point
+  start state are console-checked too.
+- **The graphics emulation.** Much of its change is to ReXGlue's emulated Xenos GPU
+  (Vulkan and D3D11 back ends, tessellation, render-target transfers). This game draws
+  with its own renderer through plume, so none of that applies.
+- **Its build and packaging scripts** (`prospero/`) are GPL-3.0-or-later; they show how
+  its title is linked and packaged, next to PS5_VulkanTemplate's tools, which this
+  title uses.
+
+Two things differ from what this plan assumed:
+
+- **The fault handler reads the code where it is** (section 3): either that game never
+  reaches that path, or a title can read its own code. The title's code read check
+  settles it.
+- **No SDL.** Its ReXGlue drivers talk to the console directly, which is the route
+  section 6 now takes.
+
+The version gap is the work: upstream ReXGlue changed 378 files between v0.8.0 and
+v0.10.0, so its PS5 files are ported, not copied, with their copyright notices kept.
 
 ## Step 0: the desktop build must show a picture
 
@@ -201,7 +261,8 @@ This mirrors how PS5_RPCS3Title is put together:
 | [`KongaTime/PS5_EdgeOfTimeTitle`](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) | The title: the PS5_VulkanTemplate foundation (launch, pad, klog, packaging, build/deploy/run tools) plus `reeot/title_main.cpp`, which will start the game (for now it runs the memory test). Made with `ps5/tools/new-title.py`. | made |
 | `KongaTime/EdgeOfTimeRecomp` (this one) | `__PROSPERO__` changes and a `ps5` CMake preset. | existing |
 | [`KongaTime/rexglue-sdk`](https://github.com/KongaTime/rexglue-sdk) | Fork of `rexglue/rexglue-sdk` at v0.10.0. PS5 backends for memory, threads, faults and the app entry. Checked out as `../rexglue-sdk`, where `docs/BUILDING.md` already expects the SDK. | forked |
-| `KongaTime/PS5_SDL3` | Fork of `libsdl-org/SDL` (3.x). PS5 video, joystick and audio backends. | new fork |
+| `KongaTime/PS5_SDL3` | Not needed: the Simpsons port's PS5 drivers for ReXGlue replace SDL3 there (section 6). | — |
+| [`KongaTime/TheSimpsonsGame-PS5-Builder`](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) | The reference port: its ReXGlue's PS5 app layer is ported into the fork. Read only. | forked |
 | `KongaTime/plume` | Fork of `zolaware/plume`. A small `__PROSPERO__` change to how volk is started (or a patch applied from this repo). | new fork |
 | PS5_PayloadSDK, PS5_Vulkan, PS5_Mesa | Unchanged; pinned by revision as the other titles pin them. | existing |
 
@@ -302,11 +363,21 @@ The link recipe already moves `malloc` into the direct-memory heap
 
 ReXGlue catches accesses to memory-mapped hardware registers with a fault handler that
 **reads the instruction that faulted** to decode it
-(`src/system/mmio_handler.cpp:426-429`). The console maps a title's code
-**execute-only**. Reading it ends the title immediately with `SYSTEM_XO_VIOLATION` and
-no signal. RPCS3 hit exactly this.
+(`src/system/mmio_handler.cpp:426-429`). PS5_RPCS3 found the console maps a title's
+code **execute-only**: reading it ended the title immediately with
+`SYSTEM_XO_VIOLATION` and no signal. The Simpsons Game's PS5 port reads the code where
+it is, with no copy.
 
-Reuse PS5_RPCS3's fix:
+**Open: the title's code read check** (PS5_EdgeOfTimeTitle `reeot/code_read_check.cpp`)
+records what the kernel says of the title's code, tries `sceKernelMprotect`
+read-execute on a page of code kept for it, and reads it. Three outcomes:
+
+- the code is readable: nothing to do here;
+- `sceKernelMprotect` makes it readable: the title makes its code segment readable at
+  start, and the handler reads it where it is;
+- neither: PS5_RPCS3's copy, below.
+
+PS5_RPCS3's fix, if it comes to that:
 
 - PS5_RPCS3Title's `rpcs3/code-copy.py` writes a readable copy of the code segment
   beside `eboot.bin` after the link (`ps5_title_post_link` in `rpcs3/rpcs3.cmake`).
@@ -380,7 +451,7 @@ More thread rules from PROBE.md and the porting skill:
 - **Logs.** Write a trace file (`/app0/reeot-trace.txt`) one line at a time, like
   `rpcs3-trace.txt`, so a crash keeps it. Send warnings to klog.
 
-### 6. Display, controller and sound (SDL3)
+### 6. Display, controller and sound
 
 SDL3 is used in four places:
 
@@ -390,9 +461,19 @@ SDL3 is used in four places:
   `thirdparty/CMakeLists.txt:3`; `plume_vulkan.cpp:2116`);
 - 11 files in this repository's `src/`.
 
-**Recommended: give SDL3 PS5 backends, once.** Then ReXGlue, plume and this repository
-build almost unchanged, and any other ReXGlue recompilation gets the same backends for
-free.
+**Taken: the Simpsons Game port's route.** Its ReXGlue has PS5 drivers that talk to the
+console directly (previous section's table): the app entry and window, a 3840×2160
+`VK_KHR_display` surface on PS5_Mesa's VideoOut, `sceAudioOut` sound and `scePad`
+input. Ported into this fork, they replace SDL3 under ReXGlue. What stays here:
+
+- **plume's surface.** `Video::CreateHostDevice` (`src/gpu/device.cpp:1063`) builds a
+  `plume::RenderWindow` from the ReXGlue window, and plume makes its Vulkan surface
+  through SDL (`PLUME_SDL_VULKAN_ENABLED`). On the PS5 it takes the display surface the
+  ported `vulkan_display_prospero.cpp` makes instead.
+- **This repository's own SDL3 uses**, in 11 files (display modes, message boxes,
+  windows): each gets a PS5 branch or is left out (section 7).
+
+The SDL3 backends this plan first proposed are not needed. For the record, they were:
 
 | SDL3 part | PS5 backend | Start from |
 | --- | --- | --- |
@@ -402,10 +483,9 @@ free.
 | Message boxes, file dialogs, URLs, loading libraries | Message box goes to klog and the trace. The rest report "unsupported". | SDL's dummy implementations |
 | Base path, locale | `/app0/`; the console's system language | — |
 
-The alternative, which PS5_RPCS3 took with `USE_SDL=OFF`, is to skip SDL. That means
-writing ReXGlue `ps5` drivers beside its `nop`/`sdl` audio and input drivers, a PS5 app
-entry and window, a plume surface path, and `#ifdef`-ing out SDL in 11 files here. That's
-more changes spread across three projects, and the result only helps this game.
+Skipping SDL, as PS5_RPCS3 did with `USE_SDL=OFF`, meant writing ReXGlue `ps5` drivers
+beside its `nop`/`sdl` ones and a PS5 app entry and window. The Simpsons port has written
+those, for ReXGlue, so that is now the shorter route.
 
 Either way:
 
@@ -420,9 +500,10 @@ Either way:
 - **120 Hz.** It needs the high-frame-rate bits in `param.json`. The display drops back
   to 59.94 Hz by itself on a 60 Hz TV.
 - **Entry point.** `REX_DEFINE_APP` uses the `main()` in ReXGlue's
-  `src/ui/windowed_app_main_sdl.cpp:129`. On PS5, rename it to a callable function
-  (for example `rex_app_main`) for `title_main.cpp` to call, as PS5_RPCS3Title calls
-  `rpcs3_ps5_run`.
+  `src/ui/windowed_app_main_sdl.cpp:129`. The Simpsons port's
+  `windowed_app_main_prospero.cpp` is the PS5 one, and is the title's `main()` there. In
+  PS5_EdgeOfTimeTitle, rename it to a callable function (for example `rex_app_main`)
+  for `title_main.cpp` to call, as PS5_RPCS3Title calls `rpcs3_ps5_run`.
 
 ### 7. EdgeOfTimeRecomp's desktop code
 
@@ -474,6 +555,9 @@ PS5_RPCS3 does.
 - **ReXGlue is in early development.** Its docs expect breaking API changes. Stay on
   v0.10.0 (what `reeot_manifest.toml` pins), and rebase the fork deliberately when this
   repository moves to a newer SDK.
+- **The reference port's ReXGlue is older.** The Simpsons port is on v0.8.0, this
+  repository on v0.10.0; upstream changed 378 files between them. Port its PS5 files
+  one area at a time, and keep this fork's console-checked memory and fibers.
 - **Memory budget.** The 4.5 GiB guest mapping, RADV, textures and the heap all have to
   fit in about 12 GiB of direct memory (section 2).
 - **Thread signals.** The fork no longer needs real-time signals (section 4), but
@@ -503,6 +587,8 @@ PS5_RPCS3 does.
 | PS5_VulkanTemplate foundation | MIT |
 | Mesa / RADV | MIT (mostly) |
 | PS5_PayloadSDK platform layer, PS5_Vulkan link recipe | GPL-3.0-or-later |
+| The Simpsons Game port's PS5 changes to ReXGlue (`tools/rexglue-sdk`) | BSD-3-Clause, as ReXGlue; keep their notices when porting them |
+| The Simpsons Game port's build scripts and builder (`prospero/`) | GPL-3.0-or-later |
 
 All of these can be combined, so the built title as a whole is GPL-3.0-or-later. This
 is unlike RPCS3, whose GPL-2.0-only licence can't be combined with the platform layer.
@@ -523,8 +609,8 @@ Keep this work in the fork unless upstream agrees to take it.
 1. **M0.** Build `linux-amd64-release` here and play to the first level.
 2. **Optional.** Try the Windows `REEOT_D3D12=OFF` build under prospero-win.
 3. **Fork** `rexglue/rexglue-sdk` at `c94f5eb` (v0.10.0) as `KongaTime/rexglue-sdk`,
-   and `libsdl-org/SDL` as `KongaTime/PS5_SDL3`. *(ReXGlue: forked, with the PS5
-   commits on `main`. SDL3: not yet.)*
+   *(Forked, with the PS5 commits on `main`. The SDL3 fork first planned here is not
+   needed: section 6.)*
 4. **Make the title** with `new-title.py`, and pin PS5_PayloadSDK `1de8b37` and
    PS5_Vulkan as PS5_RPCS3Title does. *(Made: PS5_EdgeOfTimeTitle, `PPSA99300`,
    running the memory test for now.)*
@@ -537,3 +623,16 @@ Keep this work in the fork unless upstream agrees to take it.
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
    model, and get M2. *(Done: all checks pass on the host model and, in the title, on
    the console. M2 also needs the game.)*
+8. **The code read check** (section 3). *(Built into the title at `b142389`; waiting on
+   its console run.)* Its answer decides whether the fault handler needs a code copy.
+9. **Port the Simpsons port's PS5 app layer** into the fork, at v0.10.0: the app entry,
+   window and display surface, sound, the controller, paths and settings, and the fault
+   and crash reports ([the table](#a-working-reference-the-simpsons-game-on-the-ps5)).
+   Keep the fork's memory, fibers and floating-point start. Build it with
+   `ps5/tools/build-rexglue.sh`; check it on the console with the title.
+10. **This repository on the PS5:** plume on the display surface, the PS5 branches of
+    its SDL3 uses, its desktop-only code (section 7), and `title_main.cpp` calling the
+    game (section 8). That is M1 once `generated/` builds too.
+11. **The game's code and files** (Step 0, then M2): `rexglue codegen` from your own
+    copy, built for the PS5, and the game folder copied into the title's. Later, a
+    builder like the Simpsons port's could do this from a disc image.
