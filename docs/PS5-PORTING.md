@@ -13,7 +13,7 @@ Written 2026-10-11 against these revisions:
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
 | [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `f1b5117` |
-| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `76a98ef` |
+| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `6934c3c` |
 | [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
@@ -140,12 +140,21 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 **Not done**
 
-- **The ported layer on the console:** test app 3 (the title at `76a98ef`) links the
-  whole runtime into the title for the first time and runs it through
-  `rex_ps5_app_main`: the window, `Memory::Initialize` and a read of its own code, a
-  tone through the sound driver, a rumble and 20 seconds of pad input. It links (28.7 MB),
-  with three libc names bound to the platform layer (`isatty`, `pathconf`, `realpath`)
-  and the fork's own `ffs` and `timegm` (`f1b5117`); it has not run yet.
+- **The ReXGlue runtime runs on the console** (test app 3, 2026-10-12, the title's
+  [`reeot/results/2026-10-12-test3.txt`](https://github.com/KongaTime/PS5_EdgeOfTimeTitle/blob/main/reeot/results/2026-10-12-test3.txt)).
+  Linked whole into the title (28.7 MB; `isatty`, `pathconf` and `realpath` bound to the
+  platform layer, the fork's own `ffs` and `timegm`), it started through
+  `rex_ps5_app_main` and quit cleanly:
+
+  | Checked | On the console |
+  | --- | --- |
+  | the window | open, 3840×2160 |
+  | `Memory::Initialize` | passed; the app then read its own code, made readable by the fork's fault handler |
+  | sound (`sceAudioOut`) | 375 frames in 1663 ms: 64 queued, then 311 at AudioOut's 5.33 ms pace |
+  | the controller (`scePad`) | a gamepad with rumble; the D-pad, face buttons, Options, touch pad, L3 and R3 read as their XInput buttons; full stick range; keystrokes with repeats |
+
+  Not seen: L1, R1, L2 and R2 (the test stopped at its 400-line cap), and whether the
+  tone was heard and the rumble felt.
 - **The crash and trace reports** from the Simpsons port, plume's volk start and
   surface, this repository's own PS5 changes, and the title's real program, which starts
   the game (sections 5–8).
@@ -154,9 +163,7 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 **Waiting on you**
 
-- **Run test app 3** (sent as a zip with its HOW-TO): replace `eboot.bin` in
-  `/data/homebrew/PPSA99300/`, launch it with the controller in hand (a beep, a rumble,
-  then 20 seconds of buttons and sticks), and send `reeot-test-results.txt`.
+- Say whether test app 3's tone was heard and its rumble felt.
 - Later, M2 will need the game's files from your own copy (Step 0).
 
 ## Why this is feasible
@@ -663,8 +670,8 @@ Keep this work in the fork unless upstream agrees to take it.
    and crash reports ([the table](#a-working-reference-the-simpsons-game-on-the-ps5)).
    Keep the fork's memory, fibers and floating-point start. Build it with
    `ps5/tools/build-rexglue.sh`; check it on the console with the title. *(The entry,
-   window, display surface, controller and sound are ported, `7f74d76`; next, a test
-   app that runs them on the console, then the crash and trace reports.)*
+   window, display surface, controller and sound are ported, `7f74d76`, and ran on the
+   console in test app 3; the crash and trace reports remain.)*
 10. **This repository on the PS5:** plume on the display surface, the PS5 branches of
     its SDL3 uses, its desktop-only code (section 7), and `title_main.cpp` calling the
     game (section 8). That is M1 once `generated/` builds too.
