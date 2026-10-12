@@ -150,11 +150,11 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
   | --- | --- |
   | the window | open, 3840×2160 |
   | `Memory::Initialize` | passed; the app then read its own code, made readable by the fork's fault handler |
-  | sound (`sceAudioOut`) | 375 frames in 1663 ms: 64 queued, then 311 at AudioOut's 5.33 ms pace |
-  | the controller (`scePad`) | a gamepad with rumble; the D-pad, face buttons, Options, touch pad, L3 and R3 read as their XInput buttons; full stick range; keystrokes with repeats |
+  | sound (`sceAudioOut`) | the tone was heard; 375 frames in 1663 ms: 64 queued, then 311 at AudioOut's 5.33 ms pace |
+  | the controller (`scePad`) | a gamepad; the rumble was felt; the D-pad, face buttons, Options, touch pad, L3 and R3 read as their XInput buttons; full stick range; keystrokes with repeats |
 
-  Not seen: L1, R1, L2 and R2 (the test stopped at its 400-line cap), and whether the
-  tone was heard and the rumble felt.
+  Not yet checked: L1, R1, L2 and R2 (not pressed before the test's 400-line cap); the
+  mapping is the Simpsons port's.
 - **The crash and trace reports** from the Simpsons port, plume's volk start and
   surface, this repository's own PS5 changes, and the title's real program, which starts
   the game (sections 5–8).
@@ -163,7 +163,6 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 **Waiting on you**
 
-- Say whether test app 3's tone was heard and its rumble felt.
 - Later, M2 will need the game's files from your own copy (Step 0).
 
 ## Why this is feasible
