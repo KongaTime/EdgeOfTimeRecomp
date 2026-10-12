@@ -5,10 +5,12 @@
 #include "gpu/shaders/guest_shaders.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <xxhash.h>
@@ -30,6 +32,31 @@
 namespace eot::gpu {
 
 namespace {
+
+#if defined(__PROSPERO__)
+// The PS5 build's shaders are recompiled from the containers the console
+// dumps (the title's shader dump app reads the packs); a shader the game
+// makes that is not in the cache, one in Default.xex for one, goes to
+// /app0/shader-misses.bin the same way, once a run, its two parts as one
+// container: what XenosRecomp scans for, and the bytes the hash covers
+void RecordShaderMiss(u64 hash, const u8 *virtual_bytes, u32 virtual_size, const u8 *physical_bytes,
+                      u32 physical_size) {
+  static std::mutex mutex;
+  static std::unordered_set<u64> recorded;
+  static FILE *file = nullptr;
+  std::lock_guard lock(mutex);
+  if (!recorded.insert(hash).second)
+    return;
+  if (!file && !(file = std::fopen("/app0/shader-misses.bin", "ab")))
+    return;
+  static const u8 kPad[16] = {};
+  std::fwrite(virtual_bytes, 1, virtual_size, file);
+  if (physical_size)
+    std::fwrite(physical_bytes, 1, physical_size, file);
+  std::fwrite(kPad, 1, sizeof(kPad), file);
+  std::fflush(file);
+}
+#endif
 
 std::string GuestEntryPoint(const u8 *bytes, size_t size) {
 #if defined(EOT_D3D12)
@@ -401,6 +428,10 @@ GuestShader *RegisterGuestShader(VideoState &s, u32 object_va, bool is_pixel) {
   sh->entry = it == c.by_hash.end() ? nullptr : it->second;
   if (sh->entry)
     sh->usesFloatConstants = sh->entry->usesFloatConstants != 0;
+#if defined(__PROSPERO__)
+  else
+    RecordShaderMiss(hash, virtual_bytes, virtual_size, physical_bytes, physical_size);
+#endif
   sh->floatConstantRegs =
       FloatConstantRegisters(virtual_bytes, virtual_size, header->constantTableOffset, is_pixel);
   const u32 shader_off = header->shaderOffset;
