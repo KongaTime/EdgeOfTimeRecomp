@@ -683,8 +683,10 @@ Keep this work in the fork unless upstream agrees to take it.
     game (section 8). That is M1 once `generated/` builds too. *(Started: plume's
     Vulkan backend builds for the PS5 with `ps5/patches/plume-ps5.patch`, which gives
     it a `VK_KHR_display` surface, a `RenderWindow` of the display's size, and the
-    RADV linked into the title in place of a Vulkan loader. Test app 5 in the title
-    clears the screen through it; not yet run on the console.)*
+    RADV linked into the title in place of a Vulkan loader. On the console, test app 5
+    (the title's `reeot/results/2026-10-12-test5.txt`) made a 3840×2160 swap chain of
+    three B8G8R8A8 images on the display and presented 244 frames in four seconds, the
+    display's 60 Hz, clearing to each color in turn.)*
 11. **The game's code and files** (Step 0, then M2): `rexglue codegen` from your own
     copy, built for the PS5, and the game folder copied into the title's. Later, a
     builder like the Simpsons port's could do this from a disc image.
