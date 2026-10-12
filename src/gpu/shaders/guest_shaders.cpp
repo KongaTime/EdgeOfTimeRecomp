@@ -16,6 +16,10 @@
 #include <xxhash.h>
 #include <zstd.h>
 
+#if defined(__PROSPERO__)
+#include <rex/memory/utils.h>
+#endif
+
 #include "core/logging.h"
 #include "core/profiling.h"
 
@@ -166,8 +170,44 @@ void StrictMathForMetal(std::vector<u8> &spirv) {
 }
 #endif
 
+#if defined(__PROSPERO__)
+// The decompressed cache, about 520 MiB of SPIR-V for the whole game, is more
+// than the PS5 title's flexible memory (448 MiB, where malloc's memory comes
+// from), so it lives in direct memory, as guest memory does
+class CacheBlob {
+ public:
+  bool empty() const { return !size_; }
+  const u8 *data() const { return data_; }
+  u8 *data() { return data_; }
+  size_t size() const { return size_; }
+  void resize(size_t size) {
+    clear();
+    void *p = rex::memory::AllocFixed(nullptr, size, rex::memory::AllocationType::kReserveCommit,
+                                      rex::memory::PageAccess::kReadWrite);
+    if (!p) {
+      EOT_ERROR("[shaders] no direct memory for the {} MB shader cache", size >> 20);
+      return;
+    }
+    data_ = static_cast<u8 *>(p);
+    size_ = size;
+  }
+  void clear() {
+    if (data_)
+      rex::memory::DeallocFixed(data_, 0, rex::memory::DeallocationType::kRelease);
+    data_ = nullptr;
+    size_ = 0;
+  }
+
+ private:
+  u8 *data_ = nullptr;
+  size_t size_ = 0;
+};
+#else
+using CacheBlob = std::vector<u8>;
+#endif
+
 struct CacheState {
-  std::vector<u8> blob;
+  CacheBlob blob;
   std::unordered_map<u64, const ShaderCacheEntry *> by_hash;
   std::unordered_map<u64, u64> canonical;
   std::mutex host_mutex;
@@ -240,6 +280,8 @@ bool GuestShadersInit() {
     return false;
   }
   c.blob.resize(decompressed_size);
+  if (c.blob.size() != decompressed_size)
+    return false;
   const size_t got =
       ZSTD_decompress(c.blob.data(), decompressed_size, compressed, compressed_size);
   if (ZSTD_isError(got) || got != decompressed_size) {
