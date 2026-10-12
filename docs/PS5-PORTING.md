@@ -709,7 +709,8 @@ Keep this work in the fork unless upstream agrees to take it.
     history with the v0.10.0 tag, so the fork's merge (`25d6a61`) takes the nightly's
     tree with the PS5 changes applied on top. `a9cd111` then follows the nightly's
     `Window::Create`. The PS5 runtime builds from it, every import resolves, and the
-    title links it.*
+    title links it. On the console, test app 5 on it did the same as before (the
+    title's `reeot/results/2026-10-12-test5b.txt`).*
 
     *The app's start-up (`reeot_app.cpp`) has its PS5 paths. The game folder is
     `/app0/gamedata`, copied from a PC install. Profiles, mods and logs go in the
