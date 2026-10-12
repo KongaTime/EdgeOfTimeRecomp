@@ -680,7 +680,11 @@ Keep this work in the fork unless upstream agrees to take it.
    `e2c863c`, and ran on the console in test apps 3 and 4. Done.)*
 10. **This repository on the PS5:** plume on the display surface, the PS5 branches of
     its SDL3 uses, its desktop-only code (section 7), and `title_main.cpp` calling the
-    game (section 8). That is M1 once `generated/` builds too.
+    game (section 8). That is M1 once `generated/` builds too. *(Started: plume's
+    Vulkan backend builds for the PS5 with `ps5/patches/plume-ps5.patch`, which gives
+    it a `VK_KHR_display` surface, a `RenderWindow` of the display's size, and the
+    RADV linked into the title in place of a Vulkan loader. Test app 5 in the title
+    clears the screen through it; not yet run on the console.)*
 11. **The game's code and files** (Step 0, then M2): `rexglue codegen` from your own
     copy, built for the PS5, and the game folder copied into the title's. Later, a
     builder like the Simpsons port's could do this from a disc image.
