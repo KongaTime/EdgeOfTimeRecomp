@@ -19,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #if defined(__PROSPERO__)
@@ -874,7 +875,23 @@ void ReeotApp::InstallOverlayHook() {
   });
 }
 
+#if defined(__PROSPERO__)
+namespace eot::core {
+void DumpHeldWorkBufs();
+}
+#endif
+
 void ReeotApp::OnPreLaunchModule() {
+#if defined(__PROSPERO__)
+  // Beside the runtime's stall dumps: the game's WorkBuf locks still held, every
+  // 10 s for the first two minutes (core/critical_section.cpp)
+  std::thread([] {
+    for (int round = 0; round < 12; ++round) {
+      std::this_thread::sleep_for(std::chrono::seconds(10));
+      eot::core::DumpHeldWorkBufs();
+    }
+  }).detach();
+#endif
   eot::platform::InstallCrashHandler();
   PreloadGameLogic();
 #if defined(_WIN32)
