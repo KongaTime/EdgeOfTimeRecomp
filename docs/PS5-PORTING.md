@@ -12,8 +12,8 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `7f74d76` |
-| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `9e0d568` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `f1b5117` |
+| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `76a98ef` |
 | [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
@@ -140,8 +140,12 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 **Not done**
 
-- **The ported layer on the console:** a test app that runs it (the window's loop, the
-  pad, a tone through the sound driver), which means linking the runtime into the title.
+- **The ported layer on the console:** test app 3 (the title at `76a98ef`) links the
+  whole runtime into the title for the first time and runs it through
+  `rex_ps5_app_main`: the window, `Memory::Initialize` and a read of its own code, a
+  tone through the sound driver, a rumble and 20 seconds of pad input. It links (28.7 MB),
+  with three libc names bound to the platform layer (`isatty`, `pathconf`, `realpath`)
+  and the fork's own `ffs` and `timegm` (`f1b5117`); it has not run yet.
 - **The crash and trace reports** from the Simpsons port, plume's volk start and
   surface, this repository's own PS5 changes, and the title's real program, which starts
   the game (sections 5–8).
@@ -150,8 +154,10 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 **Waiting on you**
 
-- Nothing right now. The next test app comes with the ported app layer (first steps,
-  9). Later, M2 will need the game's files from your own copy (Step 0).
+- **Run test app 3** (sent as a zip with its HOW-TO): replace `eboot.bin` in
+  `/data/homebrew/PPSA99300/`, launch it with the controller in hand (a beep, a rumble,
+  then 20 seconds of buttons and sticks), and send `reeot-test-results.txt`.
+- Later, M2 will need the game's files from your own copy (Step 0).
 
 ## Why this is feasible
 
