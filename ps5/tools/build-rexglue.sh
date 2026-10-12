@@ -36,7 +36,7 @@ build=$root/build-ps5/rexglue
 sdk_revision=1de8b37d583de476ad07cde9a0d562b75fb1be8f
 # KongaTime/rexglue-sdk main: ReXGlue v0.10.0 (the version reeot_manifest.toml pins)
 # with the PS5 target
-rexglue_revision=7f74d76d3b4b9e1b771b8f5e8da19b5aa1d00503
+rexglue_revision=f1b511792a7877437656dc104d5fc1e3c90f9931
 
 # The submodules the runtime builds from (thirdparty/CMakeLists.txt, Vulkan on, Tracy off)
 submodules=(cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui sdl3 o1heap
@@ -120,12 +120,27 @@ done | sort -u >"$work/undefined"
             libSceAudioOut libScePad libSceUserService; do
         "$nm" -D --defined-only "$sdk/target/lib/$module.so" | awk '{ print $NF }'
     done
-    for library in libc.a libc++.a libc++abi.a libc++experimental.a libunwind.a libpthread.a libps5platform.a; do
+    # (not libc.a: a title takes its C library from the console's modules and
+    # the platform layer, so ReXGlue's ffs failed the title's link while libc.a
+    # had it)
+    for library in libc++.a libc++abi.a libc++experimental.a libunwind.a libpthread.a libps5platform.a; do
         "$nm" -g --defined-only "$sdk/target/lib/$library" 2>/dev/null | awk 'NF >= 3 { print $3 }'
     done
 } | sort -u >"$work/console"
+# __emutls_get_address is Clang's builtins', which a title's link recipe takes
 comm -23 "$work/undefined" "$work/defined" | comm -23 - "$work/console" |
-    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|_ZN3rex2ui21GetWindowedAppCreatorEv' >"$work/missing" || true
+    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|__emutls_get_address|_ZN3rex2ui21GetWindowedAppCreatorEv' \
+    >"$work/unprovided" || true
+# What the platform layer has as ps5_<name>: a title binds those (--defsym), in
+# PS5_Vulkan's recipe or its own list (PS5_EdgeOfTimeTitle's reeot/reeot.cmake);
+# link-title.sh refuses a title that leaves one unbound
+"$nm" -g --defined-only "$sdk/target/lib/libps5platform.a" 2>/dev/null |
+    awk 'NF >= 3 && $3 ~ /^ps5_/ { print substr($3, 5) }' | sort -u >"$work/bindable"
+comm -12 "$work/unprovided" "$work/bindable" >"$work/bind"
+comm -23 "$work/unprovided" "$work/bindable" >"$work/missing"
+if [[ -s $work/bind ]]; then
+    echo "imported, and bound by a title to the platform layer's ps5_ functions:" $(cat "$work/bind")
+fi
 if [[ -s $work/missing ]]; then
     echo "imported, and provided by nothing a title links:" >&2
     sed 's/^/  /' "$work/missing" >&2
