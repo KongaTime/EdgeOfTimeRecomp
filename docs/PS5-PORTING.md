@@ -725,6 +725,6 @@ Keep this work in the fork unless upstream agrees to take it.
     no `dlopen` for its own code, so on the PS5 the module is linked into the title,
     and the fork's `DynamicLibrary` will find it there. The port's packages and the
     game's shaders are built from the game's files too.)*
-11. **The game's code and files** (Step 0, then M2): `rexglue codegen` from your own
+11. **The game's code and files** (Step 0, then M2; on your PC: [PS5-STEP11-PC.md](PS5-STEP11-PC.md)): `rexglue codegen` from your own
     copy, built for the PS5, and the game folder copied into the title's. Later, a
     builder like the Simpsons port's could do this from a disc image.
