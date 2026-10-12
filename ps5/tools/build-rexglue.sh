@@ -36,7 +36,7 @@ build=$root/build-ps5/rexglue
 sdk_revision=1de8b37d583de476ad07cde9a0d562b75fb1be8f
 # KongaTime/rexglue-sdk main: ReXGlue nightly-20261002-bd833a2a (what this repository's
 # CI builds against, .github/workflows/build.yml) with the PS5 target
-rexglue_revision=5964e55f4031727959c4eaa765b52c4e03f00da1
+rexglue_revision=b7a20e1e512fa0a87ea9e4e5367e10569aa74613
 
 # The submodules the runtime builds from (thirdparty/CMakeLists.txt, Vulkan on, Tracy off)
 submodules=(cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui sdl3 o1heap
