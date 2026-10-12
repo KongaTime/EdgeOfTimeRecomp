@@ -36,7 +36,7 @@ build=$root/build-ps5/rexglue
 sdk_revision=1de8b37d583de476ad07cde9a0d562b75fb1be8f
 # KongaTime/rexglue-sdk main: ReXGlue v0.10.0 (the version reeot_manifest.toml pins)
 # with the PS5 target
-rexglue_revision=f1b511792a7877437656dc104d5fc1e3c90f9931
+rexglue_revision=e2c863ca14be22d179779bb7ba22596d872f567b
 
 # The submodules the runtime builds from (thirdparty/CMakeLists.txt, Vulkan on, Tracy off)
 submodules=(cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui sdl3 o1heap
@@ -127,9 +127,11 @@ done | sort -u >"$work/undefined"
         "$nm" -g --defined-only "$sdk/target/lib/$library" 2>/dev/null | awk 'NF >= 3 { print $3 }'
     done
 } | sort -u >"$work/console"
-# __emutls_get_address is Clang's builtins', which a title's link recipe takes
+# __emutls_get_address is Clang's builtins', which a title's link recipe takes;
+# __real_abort is what a title's --wrap=abort gives the fault records'
+# __wrap_abort (the fork's src/core/abort_prospero.cpp)
 comm -23 "$work/undefined" "$work/defined" | comm -23 - "$work/console" |
-    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|__emutls_get_address|_ZN3rex2ui21GetWindowedAppCreatorEv' \
+    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|__emutls_get_address|__real_abort|_ZN3rex2ui21GetWindowedAppCreatorEv' \
     >"$work/unprovided" || true
 # What the platform layer has as ps5_<name>: a title binds those (--defsym), in
 # PS5_Vulkan's recipe or its own list (PS5_EdgeOfTimeTitle's reeot/reeot.cmake);
