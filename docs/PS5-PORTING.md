@@ -12,8 +12,8 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `f1b5117` |
-| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `6934c3c` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `e2c863c` |
+| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `c7216a1` |
 | [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
@@ -153,11 +153,18 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
   | sound (`sceAudioOut`) | the tone was heard; 375 frames in 1663 ms: 64 queued, then 311 at AudioOut's 5.33 ms pace |
   | the controller (`scePad`) | a gamepad; the rumble was felt; the D-pad, face buttons, Options, touch pad, L3 and R3 read as their XInput buttons; full stick range; keystrokes with repeats |
 
-  Not yet checked: L1, R1, L2 and R2 (not pressed before the test's 400-line cap); the
-  mapping is the Simpsons port's.
-- **The crash and trace reports** from the Simpsons port, plume's volk start and
-  surface, this repository's own PS5 changes, and the title's real program, which starts
-  the game (sections 5–8).
+  Test app 4 (the title's `reeot/results/2026-10-12-test4.txt`) added L1, R1 and the
+  triggers' full 0–255 range, and the fault records below.
+- **Fault records** (first steps, 9; the fork's `e2c863c`, from the Simpsons port): a
+  fault no ReXGlue handler takes is recorded in `<state folder>/logs/fault.log` (the
+  registers, and a frame-pointer backtrace with each address's place in the linked ELF)
+  and passed on, so the title ends instead of faulting on the same instruction forever;
+  `abort()` is recorded through `--wrap=abort`. On the console, test app 4's write to
+  address 0 gave a record whose addresses resolve, with `llvm-nm -n` on the build's
+  `llvm-pie.elf`, to the faulting store and each caller up to the console's thread entry
+  (`reeot/results/2026-10-12-test4-fault.log`).
+- **plume's volk start and surface**, this repository's own PS5 changes, and the title's
+  real program, which starts the game (sections 5–8; first steps, 10).
 - **Step 0** (the desktop build with game files), and running the runtime itself on the
   console.
 
@@ -669,8 +676,8 @@ Keep this work in the fork unless upstream agrees to take it.
    and crash reports ([the table](#a-working-reference-the-simpsons-game-on-the-ps5)).
    Keep the fork's memory, fibers and floating-point start. Build it with
    `ps5/tools/build-rexglue.sh`; check it on the console with the title. *(The entry,
-   window, display surface, controller and sound are ported, `7f74d76`, and ran on the
-   console in test app 3; the crash and trace reports remain.)*
+   window, display surface, controller, sound and fault records are ported, `7f74d76` and
+   `e2c863c`, and ran on the console in test apps 3 and 4. Done.)*
 10. **This repository on the PS5:** plume on the display surface, the PS5 branches of
     its SDL3 uses, its desktop-only code (section 7), and `title_main.cpp` calling the
     game (section 8). That is M1 once `generated/` builds too.
