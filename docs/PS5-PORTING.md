@@ -12,7 +12,7 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `2f4a3ef` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `7f74d76` |
 | [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `9e0d568` |
 | [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
@@ -53,7 +53,7 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 - **The ReXGlue runtime compiles for the PS5.** The fork's commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `2f4a3ef`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `7f74d76`) build `librexruntime.a` and its libraries (FFmpeg, fmt, spdlog and the rest; no SDL3) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -129,12 +129,22 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
   handler runs (`2f4a3ef`), so the MMIO handler reads the instruction where it is, with
   no code copy. The title's next run checks the same on the whole segment.
 
+- **The Simpsons port's PS5 app layer, ported** (first steps, 9; the fork's
+  [`ps5/PORTED.md`](https://github.com/KongaTime/rexglue-sdk/blob/main/ps5/PORTED.md),
+  `7f74d76`): the app context and window (one 3840×2160 display surface), the entry as
+  `rex_ps5_app_main` for the title's `main` to call, the DualSense through `scePad` in
+  v0.10.0's device-based input model, and `sceAudioOut` sound. `ReXApp` uses them on the
+  PS5, finds the game in `/app0/gamedata` and logs each start-up stage. SDL3 is neither
+  built nor linked for the PS5. It builds, every import resolves, and the desktop build
+  still configures and compiles the shared files; none of it has run on the console yet.
+
 **Not done**
 
-- **The Simpsons port's PS5 app layer** ported into the fork (the entry and window, the
-  display, sound, the controller, paths, crash reports), plume's volk start and surface,
-  this repository's own PS5 changes, and the title's real program, which starts the
-  game (sections 5–8).
+- **The ported layer on the console:** a test app that runs it (the window's loop, the
+  pad, a tone through the sound driver), which means linking the runtime into the title.
+- **The crash and trace reports** from the Simpsons port, plume's volk start and
+  surface, this repository's own PS5 changes, and the title's real program, which starts
+  the game (sections 5–8).
 - **Step 0** (the desktop build with game files), and running the runtime itself on the
   console.
 
@@ -646,7 +656,9 @@ Keep this work in the fork unless upstream agrees to take it.
    window and display surface, sound, the controller, paths and settings, and the fault
    and crash reports ([the table](#a-working-reference-the-simpsons-game-on-the-ps5)).
    Keep the fork's memory, fibers and floating-point start. Build it with
-   `ps5/tools/build-rexglue.sh`; check it on the console with the title.
+   `ps5/tools/build-rexglue.sh`; check it on the console with the title. *(The entry,
+   window, display surface, controller and sound are ported, `7f74d76`; next, a test
+   app that runs them on the console, then the crash and trace reports.)*
 10. **This repository on the PS5:** plume on the display surface, the PS5 branches of
     its SDL3 uses, its desktop-only code (section 7), and `title_main.cpp` calling the
     game (section 8). That is M1 once `generated/` builds too.

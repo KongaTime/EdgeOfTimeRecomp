@@ -36,7 +36,7 @@ build=$root/build-ps5/rexglue
 sdk_revision=1de8b37d583de476ad07cde9a0d562b75fb1be8f
 # KongaTime/rexglue-sdk main: ReXGlue v0.10.0 (the version reeot_manifest.toml pins)
 # with the PS5 target
-rexglue_revision=2f4a3ef2b761b9117d58e118761bfa19d7a9bfac
+rexglue_revision=7f74d76d3b4b9e1b771b8f5e8da19b5aa1d00503
 
 # The submodules the runtime builds from (thirdparty/CMakeLists.txt, Vulkan on, Tracy off)
 submodules=(cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui sdl3 o1heap
@@ -98,7 +98,8 @@ step "building rexruntime"
 ninja -C "$build" -k 0 rexruntime >"$build/build.log" 2>&1 ||
     fail "the build failed: $build/build.log ($(grep -c 'error:' "$build/build.log") errors)"
 
-# What the libraries import that nothing provides
+# What the libraries import that nothing provides. rex::ui::GetWindowedAppCreator
+# is the app's (REX_DEFINE_APP), which the PS5 entry, rex_ps5_app_main, calls.
 step "checking the runtime's imports"
 nm=$sdk/bin/prospero-nm
 out=$rexglue/out/ps5-amd64
@@ -111,8 +112,12 @@ for archive in "$out"/*.a; do
     "$nm" -g --undefined-only "$archive" 2>/dev/null | awk 'NF && $NF !~ /:$/ { print $NF }'
 done | sort -u >"$work/undefined"
 {
-    # The modules a title links by default (the SDK's compiler wrapper), and its static libraries
-    for module in libkernel_web libSceLibcInternal libc_stub_weak libkernel_stub_weak libSceNet; do
+    # The modules a title links by default (the SDK's compiler wrapper), the
+    # system modules the runtime's PS5 drivers call (sound, the pad, the user
+    # service: a title's link takes every SDK module it needs), and its static
+    # libraries
+    for module in libkernel_web libSceLibcInternal libc_stub_weak libkernel_stub_weak libSceNet \
+            libSceAudioOut libScePad libSceUserService; do
         "$nm" -D --defined-only "$sdk/target/lib/$module.so" | awk '{ print $NF }'
     done
     for library in libc.a libc++.a libc++abi.a libc++experimental.a libunwind.a libpthread.a libps5platform.a; do
@@ -120,7 +125,7 @@ done | sort -u >"$work/undefined"
     done
 } | sort -u >"$work/console"
 comm -23 "$work/undefined" "$work/defined" | comm -23 - "$work/console" |
-    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle' >"$work/missing" || true
+    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|_ZN3rex2ui21GetWindowedAppCreatorEv' >"$work/missing" || true
 if [[ -s $work/missing ]]; then
     echo "imported, and provided by nothing a title links:" >&2
     sed 's/^/  /' "$work/missing" >&2
