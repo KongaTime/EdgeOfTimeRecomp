@@ -11,7 +11,7 @@ Written 2026-10-11 against these revisions:
 | What | Revision |
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
-| [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
+| [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `bd833a2` (`nightly-20261002-bd833a2a`, what this repository's CI builds against; the fork started from `c94f5eb`, v0.10.0) |
 | [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `e2c863c` |
 | [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `c7216a1` |
 | [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
@@ -302,7 +302,7 @@ This mirrors how PS5_RPCS3Title is put together:
 | --- | --- | --- |
 | [`KongaTime/PS5_EdgeOfTimeTitle`](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) | The title: the PS5_VulkanTemplate foundation (launch, pad, klog, packaging, build/deploy/run tools) plus `reeot/title_main.cpp`, which will start the game (for now it runs the memory test). Made with `ps5/tools/new-title.py`. | made |
 | `KongaTime/EdgeOfTimeRecomp` (this one) | `__PROSPERO__` changes and a `ps5` CMake preset. | existing |
-| [`KongaTime/rexglue-sdk`](https://github.com/KongaTime/rexglue-sdk) | Fork of `rexglue/rexglue-sdk` at v0.10.0. PS5 backends for memory, threads, faults and the app entry. Checked out as `../rexglue-sdk`, where `docs/BUILDING.md` already expects the SDK. | forked |
+| [`KongaTime/rexglue-sdk`](https://github.com/KongaTime/rexglue-sdk) | Fork of `rexglue/rexglue-sdk`, at `nightly-20261002-bd833a2a` since `25d6a61` (v0.10.0 before). PS5 backends for memory, threads, faults and the app entry. Checked out as `../rexglue-sdk`, where `docs/BUILDING.md` already expects the SDK. | forked |
 | `KongaTime/PS5_SDL3` | Not needed: the Simpsons port's PS5 drivers for ReXGlue replace SDL3 there (section 6). | — |
 | [`KongaTime/TheSimpsonsGame-PS5-Builder`](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) | The reference port: its ReXGlue's PS5 app layer is ported into the fork. Read only. | forked |
 | `KongaTime/plume` | Fork of `zolaware/plume`. A small `__PROSPERO__` change to how volk is started (or a patch applied from this repo). | new fork |
@@ -598,9 +598,12 @@ PS5_RPCS3 does.
 
 ## Risks and open questions
 
-- **ReXGlue is in early development.** Its docs expect breaking API changes. Stay on
-  v0.10.0 (what `reeot_manifest.toml` pins), and rebase the fork deliberately when this
-  repository moves to a newer SDK.
+- **ReXGlue is in early development.** Its docs expect breaking API changes. Follow the
+  SDK this repository's CI builds against (`REXGLUE_TAG` in
+  `.github/workflows/build.yml`, not `reeot_manifest.toml`'s `sdk_version`), and merge
+  it into the fork deliberately when that moves. Upstream's nightlies share no history
+  with its release tags, so each merge applies the fork's PS5 changes onto the
+  nightly's tree (as `25d6a61` did).
 - **The reference port's ReXGlue is older.** The Simpsons port is on v0.8.0, this
   repository on v0.10.0; upstream changed 378 files between them. Port its PS5 files
   one area at a time, and keep this fork's console-checked memory and fibers.
@@ -700,12 +703,27 @@ Keep this work in the fork unless upstream agrees to take it.
     `pthread_set_name_np`. `file_dialog.cpp` and `self_install.cpp` serve only the
     installer and stay out.*
 
-    *Left: `main.cpp` and `reeot_app.cpp`, the app and its start-up. They need the
-    game's generated code (step 11) and a ReXGlue newer than v0.10.0. This repository's
-    CI builds against `nightly-20261002-bd833a2a`, and `reeot_app.cpp` overrides
-    `OnConfigureLogging`, which upstream added after v0.10.0 (`b971840`). The fork has
-    to take that nightly first; 6 of its 63 changed files are files the fork's PS5
-    work touches.)*
+    *The fork now follows the ReXGlue this repository's CI builds against,
+    `nightly-20261002-bd833a2a`, not v0.10.0. `reeot_app.cpp` overrides
+    `OnConfigureLogging`, which upstream added after v0.10.0. The nightly shares no git
+    history with the v0.10.0 tag, so the fork's merge (`25d6a61`) takes the nightly's
+    tree with the PS5 changes applied on top. `a9cd111` then follows the nightly's
+    `Window::Create`. The PS5 runtime builds from it, every import resolves, and the
+    title links it.*
+
+    *The app's start-up (`reeot_app.cpp`) has its PS5 paths. The game folder is
+    `/app0/gamedata`, copied from a PC install. Profiles, mods and logs go in the
+    title's state folder. There is no installer, update check or second process. If
+    `Default.xex` is missing, the app says what to copy and quits. With a stand-in
+    for the generated header it compiles for the PS5 and the desktop, and so does
+    `self_install.cpp`, which writes the port's packages into the game folder.*
+
+    *Left for step 11: the game's generated code (`main.cpp`'s `reeot_init.h`, the
+    `PPCImageConfig` the app is made from) and the game logic module. The desktop opens
+    `GameLogic.dll`'s recompiled code with `dlopen` (`ReXModule_Register`). A title has
+    no `dlopen` for its own code, so on the PS5 the module is linked into the title,
+    and the fork's `DynamicLibrary` will find it there. The port's packages and the
+    game's shaders are built from the game's files too.)*
 11. **The game's code and files** (Step 0, then M2): `rexglue codegen` from your own
     copy, built for the PS5, and the game folder copied into the title's. Later, a
     builder like the Simpsons port's could do this from a disc image.

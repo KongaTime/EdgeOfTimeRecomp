@@ -34,9 +34,9 @@ build=$root/build-ps5/rexglue
 
 # The payload SDK fork at the revision PS5_RPCS3Title pins (1de8b37: pathconf, sbrk)
 sdk_revision=1de8b37d583de476ad07cde9a0d562b75fb1be8f
-# KongaTime/rexglue-sdk main: ReXGlue v0.10.0 (the version reeot_manifest.toml pins)
-# with the PS5 target
-rexglue_revision=e2c863ca14be22d179779bb7ba22596d872f567b
+# KongaTime/rexglue-sdk main: ReXGlue nightly-20261002-bd833a2a (what this repository's
+# CI builds against, .github/workflows/build.yml) with the PS5 target
+rexglue_revision=a9cd1116984624d2a5d322572757ce6277d68f7c
 
 # The submodules the runtime builds from (thirdparty/CMakeLists.txt, Vulkan on, Tracy off)
 submodules=(cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui sdl3 o1heap

@@ -21,8 +21,12 @@
 #include <string_view>
 #include <vector>
 
+#if defined(__PROSPERO__)
+#include <rex/ui/startup_prospero.h>
+#else
 #include <SDL3/SDL.h>
-#if !defined(_WIN32)
+#endif
+#if !defined(_WIN32) && !defined(__PROSPERO__)
 #include <dlfcn.h>
 #endif
 #include <imgui_internal.h>
@@ -156,7 +160,7 @@ void SaveProfileConfig(const std::filesystem::path &path) {
 // The SDK opens this module by its bare name, which dlopen does not look for beside the
 // executable.
 void PreloadGameLogic() {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__PROSPERO__) // the PS5 title links it in
   static void *handle = nullptr;
   if (handle)
     return;
@@ -343,6 +347,11 @@ bool IsCliCommand(std::string_view word) {
 
 std::optional<fs::path> ReeotApp::NamedGameFolder() const {
   std::string named = REXCVAR_GET(game_data_root);
+#if defined(__PROSPERO__)
+  // The title's game folder, copied from a PC install (docs/PS5-PORTING.md)
+  if (named.empty())
+    named = "/app0/gamedata";
+#endif
   if (named.empty())
     if (auto positional = GetArgument("command"); positional && !IsCliCommand(*positional))
       named = *positional;
@@ -352,12 +361,18 @@ std::optional<fs::path> ReeotApp::NamedGameFolder() const {
 }
 
 std::optional<fs::path> ReeotApp::EarlyInstallRoot() const {
+#if defined(__PROSPERO__)
+  // Profiles, mods and logs in the title's state folder, writable even when
+  // /app0 is a read-only image
+  return fs::path(prospero_state_root());
+#else
   if (auto named = NamedGameFolder())
     return named->parent_path();
   if (auto cfg = eot::installer::ReadInstallRegistry())
     if (cfg->schema_version == eot::installer::kInstallSchemaVersion && eot::installer::InstallIsPresent(*cfg))
       return cfg->install_root;
   return std::nullopt;
+#endif
 }
 
 void ReeotApp::UseInstallRoot(const fs::path &root, rex::PathConfig &paths) {
@@ -493,11 +508,13 @@ void ReeotApp::OnPostInitLogging() {
              xlanguage);
   }
 
+#if !defined(__PROSPERO__) // the title is the installed copy
   eot::platform::UpdateInstalledCopy(install_root_);
   if (const auto done = eot::platform::LastInstallUpdate())
     eot::platform::ShowInfo("reeot updated", "reeot " + done->version + " is now installed in\n" +
                                                  done->location +
                                                  "\n\nYour installed copy is up to date.");
+#endif
 
   if (!eot::platform::AcquireInstanceLock()) {
     eot::platform::ShowFatalError("reeot is already running", "Close the running copy before starting another.");
@@ -540,6 +557,15 @@ ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(re
     paths.game_data_root = *named;
     return paths;
   }
+#if defined(__PROSPERO__)
+  // No installer on the console: the game folder comes from a PC install
+  (void)resume;
+  eot::platform::ShowFatalError("reeot - game files missing",
+                                "No Default.xex in /app0/gamedata. Install the game with reeot on a PC, then "
+                                "copy its game folder into the title's gamedata folder.");
+  app_context().QuitFromUIThread();
+  return std::nullopt;
+#endif
   if (const std::string named = REXCVAR_GET(game_data_root); !named.empty())
     EOT_WARN("[install] {} holds no Default.xex; looking for an install instead", named);
 
