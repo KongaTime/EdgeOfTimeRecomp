@@ -191,6 +191,10 @@ class CacheBlob {
     data_ = static_cast<u8 *>(p);
     size_ = size;
   }
+  CacheBlob() = default;
+  CacheBlob(const CacheBlob &) = delete;
+  CacheBlob &operator=(const CacheBlob &) = delete;
+  ~CacheBlob() { clear(); }
   void clear() {
     if (data_)
       rex::memory::DeallocFixed(data_, 0, rex::memory::DeallocationType::kRelease);
@@ -202,6 +206,40 @@ class CacheBlob {
   u8 *data_ = nullptr;
   size_t size_ = 0;
 };
+
+// The title can ship the compressed SPIR-V as a file beside eboot.bin
+// (ps5/tools/split-shader-cache.py), so a build that only changes code is a
+// small download; its cache source then defines this
+extern "C" __attribute__((weak)) const unsigned char reeot_spirv_cache_external;
+
+// Reads that file into direct memory; it must be the one made with this
+// eboot.bin's entry table, which its size stands in for
+bool ReadExternalSpirv(CacheBlob &out, size_t compressed_size) {
+  constexpr const char *kPath = "/app0/shader-cache.zst";
+  FILE *f = std::fopen(kPath, "rb");
+  if (!f) {
+    EOT_ERROR("[shaders] no {}: copy the shader-cache.zst that came with this eboot.bin next to it; "
+              "no guest shader will run", kPath);
+    return false;
+  }
+  std::fseek(f, 0, SEEK_END);
+  const long size = std::ftell(f);
+  std::fseek(f, 0, SEEK_SET);
+  bool ok = size == static_cast<long>(compressed_size);
+  if (!ok)
+    EOT_ERROR("[shaders] {} is {} bytes where this eboot.bin's shaders are {}: copy the "
+              "shader-cache.zst that came with it; no guest shader will run",
+              kPath, size, compressed_size);
+  if (ok) {
+    out.resize(compressed_size);
+    ok = out.size() == compressed_size &&
+         std::fread(out.data(), 1, compressed_size, f) == compressed_size;
+    if (!ok)
+      EOT_ERROR("[shaders] could not read {}", kPath);
+  }
+  std::fclose(f);
+  return ok;
+}
 #else
 using CacheBlob = std::vector<u8>;
 #endif
@@ -273,6 +311,14 @@ bool GuestShadersInit() {
   const u8 *compressed = g_compressedSpirvCache;
   const size_t compressed_size = g_spirvCacheCompressedSize;
   const size_t decompressed_size = g_spirvCacheDecompressedSize;
+#endif
+#if defined(__PROSPERO__)
+  CacheBlob external;
+  if (&reeot_spirv_cache_external && g_shaderCacheEntryCount && decompressed_size) {
+    if (!ReadExternalSpirv(external, compressed_size))
+      return false;
+    compressed = external.data();
+  }
 #endif
   if (g_shaderCacheEntryCount == 0 || decompressed_size == 0) {
     EOT_ERROR("[shaders] the embedded shader cache is empty: build "
