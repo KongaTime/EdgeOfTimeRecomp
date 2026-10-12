@@ -12,8 +12,8 @@ Written 2026-10-11 against these revisions:
 | --- | --- |
 | This repository (EdgeOfTimeRecomp) | `340144e` |
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) | `c94f5eb` (v0.10.0, the version `reeot_manifest.toml` pins) |
-| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `b84a414` |
-| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `b142389` |
+| [KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk) (the PS5 fork) | `main` at `2f4a3ef` |
+| [KongaTime/PS5_EdgeOfTimeTitle](https://github.com/KongaTime/PS5_EdgeOfTimeTitle) (the title) | `main` at `9e0d568` |
 | [KongaTime/TheSimpsonsGame-PS5-Builder](https://github.com/KongaTime/TheSimpsonsGame-PS5-Builder) (the reference port, a fork of LoZazaMastro's) | `59e7086` |
 | [plume](https://github.com/zolaware/plume) (submodule) | `de0f70f` |
 | [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title) | `620af91` (build 131) |
@@ -53,7 +53,7 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
 
 - **The ReXGlue runtime compiles for the PS5.** The fork's commits on v0.10.0
   ([KongaTime/rexglue-sdk](https://github.com/KongaTime/rexglue-sdk/commits/main), `main`
-  at `b84a414`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
+  at `2f4a3ef`) build `librexruntime.a` and its libraries (SDL3, FFmpeg, fmt, spdlog and the rest) with
   PS5_PayloadSDK `1de8b37` and clang 20.
   [`ps5/tools/build-rexglue.sh`](../ps5/tools/build-rexglue.sh) does it from a clean
   checkout.
@@ -114,21 +114,34 @@ As of 2026-10-11. Everything here was built on a Linux PC; the probe and the mem
   `7b59ef2`), installed in `/data/homebrew`, and launched from the home screen, it ran
   the test above. Its second build (`b142389`) adds the code read check (section 3);
   both write `/app0/reeot-test-results.txt`.
+- **The title's code made readable** (section 3). The code read check's console run
+  (2026-10-12, the title's
+  [`reeot/results/2026-10-12.txt`](https://github.com/KongaTime/PS5_EdgeOfTimeTitle/blob/main/reeot/results/2026-10-12.txt)):
+
+  | Checked | On the console |
+  | --- | --- |
+  | what the kernel says of the title's code (`0x400000`–`0xd3c000`) and a system module's | `0x4`, execute only |
+  | reading the title's untouched code | ended the title (the file stops at that read) |
+  | `sceKernelMprotect` read+execute on a page of code | succeeds; the page still runs and reads back its real bytes |
+  | what the kernel says of that page afterwards | still `0x4`: the query cannot tell readable code |
+
+  The fork's `ExceptionHandler::Install` now makes the code segment readable before any
+  handler runs (`2f4a3ef`), so the MMIO handler reads the instruction where it is, with
+  no code copy. The title's next run checks the same on the whole segment.
 
 **Not done**
 
-- **The MMIO handler's instruction reads** (section 3): still read execute-only code.
-- **SDL3's PS5 backends**, plume's volk start, this repository's own PS5 changes, and the
-  title's real program, which starts the game (sections 6–8).
+- **The Simpsons port's PS5 app layer** ported into the fork (the entry and window, the
+  display, sound, the controller, paths, crash reports), plume's volk start and surface,
+  this repository's own PS5 changes, and the title's real program, which starts the
+  game (sections 5–8).
 - **Step 0** (the desktop build with game files), and running the runtime itself on the
   console.
 
 **Waiting on you**
 
-- **Run test app 2** (the title at `b142389`, sent as a zip with its HOW-TO): copy it to
-  `/data/homebrew/PPSA99300/`, launch it, and send `reeot-test-results.txt` from that
-  folder. It may close with an error at the end; that is one of the answers.
-- Later, M2 will need the game's files from your own copy (Step 0).
+- Nothing right now. The next test app comes with the ported app layer (first steps,
+  9). Later, M2 will need the game's files from your own copy (Step 0).
 
 ## Why this is feasible
 
@@ -200,9 +213,9 @@ The plan takes those, ported to v0.10.0, in place of writing them. What it does 
 
 Two things differ from what this plan assumed:
 
-- **The fault handler reads the code where it is** (section 3): either that game never
-  reaches that path, or a title can read its own code. The title's code read check
-  settles it.
+- **The fault handler reads the code where it is** (section 3). A title cannot read its
+  own code unless it makes it readable (the code read check), and that port does not,
+  so its game presumably never takes that path. This fork makes the code readable.
 - **No SDL.** Its ReXGlue drivers talk to the console directly, which is the route
   section 6 now takes.
 
@@ -368,16 +381,20 @@ code **execute-only**: reading it ended the title immediately with
 `SYSTEM_XO_VIOLATION` and no signal. The Simpsons Game's PS5 port reads the code where
 it is, with no copy.
 
-**Open: the title's code read check** (PS5_EdgeOfTimeTitle `reeot/code_read_check.cpp`)
-records what the kernel says of the title's code, tries `sceKernelMprotect`
-read-execute on a page of code kept for it, and reads it. Three outcomes:
+**Done: the title makes its code readable.** The title's code read check
+(PS5_EdgeOfTimeTitle `reeot/code_read_check.cpp`, console run 2026-10-12) found that
+`sceKernelMprotect` read+execute makes a page of the title's code readable, and it still
+runs; untouched code still ends the title when read, and the kernel's query answers
+execute-only either way. So the fork's `ExceptionHandler::Install` makes the whole code
+segment readable (its bounds from `sceKernelQueryMemoryProtection` on a function in it)
+before any handler runs, and `MMIOHandler` reads the instruction where it is.
 
-- the code is readable: nothing to do here;
-- `sceKernelMprotect` makes it readable: the title makes its code segment readable at
-  start, and the handler reads it where it is;
-- neither: PS5_RPCS3's copy, below.
+System modules' code (`0x800000000` up) stays execute-only. A fault in an MMIO range
+from inside one (a libc `memcpy`, say) would still end the title when the handler reads
+the instruction. The game's MMIO accesses are expected to come from its recompiled
+code, which is readable now.
 
-PS5_RPCS3's fix, if it comes to that:
+PS5_RPCS3's fix, not needed here, for the record:
 
 - PS5_RPCS3Title's `rpcs3/code-copy.py` writes a readable copy of the code segment
   beside `eboot.bin` after the link (`ps5_title_post_link` in `rpcs3/rpcs3.cmake`).
@@ -623,8 +640,8 @@ Keep this work in the fork unless upstream agrees to take it.
 7. **Write `memory_ps5.cpp`** (section 2). Use PS5_RPCS3's `vm_native_ps5.cpp` as the
    model, and get M2. *(Done: all checks pass on the host model and, in the title, on
    the console. M2 also needs the game.)*
-8. **The code read check** (section 3). *(Built into the title at `b142389`; waiting on
-   its console run.)* Its answer decides whether the fault handler needs a code copy.
+8. **The code read check** (section 3). *(Done: `sceKernelMprotect` makes the title's
+   code readable; the fork does it at start, `2f4a3ef`. No code copy.)*
 9. **Port the Simpsons port's PS5 app layer** into the fork, at v0.10.0: the app entry,
    window and display surface, sound, the controller, paths and settings, and the fault
    and crash reports ([the table](#a-working-reference-the-simpsons-game-on-the-ps5)).
