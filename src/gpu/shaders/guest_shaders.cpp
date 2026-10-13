@@ -209,8 +209,10 @@ class CacheBlob {
 
 // The title can ship the compressed SPIR-V as a file beside eboot.bin
 // (ps5/tools/split-shader-cache.py), so a build that only changes code is a
-// small download; its cache source then defines this
-extern "C" __attribute__((weak)) const unsigned char reeot_spirv_cache_external;
+// small download; its cache source then defines this as 1. This weak 0 is for
+// every other build: the console's tools refuse a title with a symbol left
+// undefined, weak or not.
+extern "C" __attribute__((weak)) const unsigned char reeot_spirv_cache_external = 0;
 
 // Reads that file into direct memory; it must be the one made with this
 // eboot.bin's entry table, which its size stands in for
@@ -314,7 +316,9 @@ bool GuestShadersInit() {
 #endif
 #if defined(__PROSPERO__)
   CacheBlob external;
-  if (&reeot_spirv_cache_external && g_shaderCacheEntryCount && decompressed_size) {
+  // Read as memory: the weak 0 above may not be the definition the link keeps
+  if (*static_cast<const volatile unsigned char *>(&reeot_spirv_cache_external) && g_shaderCacheEntryCount &&
+      decompressed_size) {
     if (!ReadExternalSpirv(external, compressed_size))
       return false;
     compressed = external.data();

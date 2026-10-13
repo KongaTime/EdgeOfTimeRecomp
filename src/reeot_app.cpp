@@ -67,6 +67,12 @@
 #include "installer/install_registry.h"
 #include "mods/mod_manager.h"
 #include "gpu/shaders/guest_shaders.h"
+#if defined(__PROSPERO__)
+#include <span>
+#include <rex/memory/utils.h>
+#include "core/memory_helpers.h"
+#include "gpu/shaders/shader_dump.h"
+#endif
 #include "gpu/pipeline/pipeline_cache.h"
 #include "platform/crash_handler.h"
 #include "platform/desktop_shortcut.h"
@@ -879,6 +885,54 @@ void ReeotApp::InstallOverlayHook() {
 namespace eot::core {
 void DumpHeldWorkBufs();
 }
+
+namespace {
+
+void DumpNote(const char *line) {
+  EOT_INFO("[shaders] {}", line);
+  prospero_startup_log(line);
+}
+
+// A PS5 build with no shader cache is the shader dump. XenosRecomp needs the
+// game's shader containers: the packs' and Default.xex's own, which no pack
+// holds and which are only whole once the runtime has loaded and patched the
+// module, as it has before the module launches (the first builds drew nothing
+// until those were added from what the game recorded while it ran). Both go to
+// /app0/shader-dump.bin (gpu/shaders/shader_dump.h); Default.xex is read where
+// the runtime says its pages are readable.
+void DumpShadersForRecompile() {
+  std::vector<std::span<const uint8_t>> image;
+  const uint32_t base = PPCImageConfig.image_base;
+  const uint32_t end = base + PPCImageConfig.image_size;
+  for (uint32_t va = base; va < end;) {
+    uint8_t *host = eot::mem::at<uint8_t>(va);
+    size_t length = 0;
+    rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
+    if (!host || !rex::memory::QueryProtect(host, length, access) || !length)
+      break;
+    const uint32_t run = uint32_t(std::min<uint64_t>(length, end - va));
+    if (static_cast<int>(access) & static_cast<int>(rex::memory::PageAccess::kReadOnly))
+      image.emplace_back(host, run);
+    va += run;
+  }
+  size_t readable = 0;
+  for (const auto &range : image)
+    readable += range.size();
+  const std::string about = std::format("dump: Default.xex at {:#x}, {} KB of {} KB readable", base,
+                                        readable >> 10, PPCImageConfig.image_size >> 10);
+  DumpNote(about.c_str());
+  eot::gpu::shader_dump::Totals totals;
+  const bool ok =
+      eot::gpu::shader_dump::Run("/app0/gamedata", "/app0/shader-dump.bin", image, DumpNote, &totals);
+  eot::platform::ShowInfo(
+      "reeot - shaders dumped",
+      ok ? "This build has no shaders yet, so it wrote the game's to shader-dump.bin and closed. Recompile "
+           "them (RELEASE.md, step 5), build again, and the game draws."
+         : "This build has no shaders yet, but writing them to shader-dump.bin failed; the lines above say "
+           "where.");
+}
+
+}  // namespace
 #endif
 
 void ReeotApp::OnPreLaunchModule() {
@@ -905,6 +959,13 @@ void ReeotApp::OnPreLaunchModule() {
   InstallOverlayHook();
   eot::ui::StartAchievementFeed();
   app_context().CallInUIThreadDeferred([] { eot::platform::RaiseMainWindow(); });
+#if defined(__PROSPERO__)
+  if (eot::gpu::GuestShaderCacheCount() == 0) {
+    DumpShadersForRecompile();
+    app_context().QuitFromUIThread();
+    return;
+  }
+#endif
   eot::gpu::GuestShadersInit();
   eot::gpu::PsoCachePrecache();
 }
