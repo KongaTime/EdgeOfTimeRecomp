@@ -72,6 +72,7 @@
 #include <rex/memory/utils.h>
 #include "core/memory_helpers.h"
 #include "gpu/shaders/shader_dump.h"
+#include <rex/logging/api.h>
 #endif
 #include "gpu/pipeline/pipeline_cache.h"
 #include "platform/crash_handler.h"
@@ -886,6 +887,9 @@ namespace eot::core {
 void DumpHeldWorkBufs();
 }
 
+// libSceSystemService, which the title links: "exit" asks the shell to close the title
+extern "C" int sceSystemServiceLoadExec(const char *path, const char *const *argv);
+
 namespace {
 
 void DumpNote(const char *line) {
@@ -926,8 +930,8 @@ void DumpShadersForRecompile() {
       eot::gpu::shader_dump::Run("/app0/gamedata", "/app0/shader-dump.bin", image, DumpNote, &totals);
   eot::platform::ShowInfo(
       "reeot - shaders dumped",
-      ok ? "This build has no shaders yet, so it wrote the game's to shader-dump.bin and closed. Recompile "
-           "them (RELEASE.md, step 5), build again, and the game draws."
+      ok ? "This build has no shaders yet, so it wrote the game's to shader-dump.bin and closes now. "
+           "Recompile them (RELEASE.md, step 5), build again, and the game draws."
          : "This build has no shaders yet, but writing them to shader-dump.bin failed; the lines above say "
            "where.");
 }
@@ -962,8 +966,18 @@ void ReeotApp::OnPreLaunchModule() {
 #if defined(__PROSPERO__)
   if (eot::gpu::GuestShaderCacheCount() == 0) {
     DumpShadersForRecompile();
-    app_context().QuitFromUIThread();
-    return;
+    // The runtime launches the module after this hook whatever it does, and the
+    // shutdown a quit starts then waits on the game's threads, which never end
+    // (the first dump on the console, 2026-10-13). The dump is whole and its
+    // file closed, so the app ends here: through the shell, as the title's
+    // template ends a title (catchReturnFromMain), since _Exit kills it and the
+    // console reports a crash over a run that worked (the second dump). The
+    // shell closes the app on its own time; this thread waits for it, and the
+    // module never launches.
+    rex::FlushLogging();
+    (void)sceSystemServiceLoadExec("exit", nullptr);
+    for (;;)
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 #endif
   eot::gpu::GuestShadersInit();
