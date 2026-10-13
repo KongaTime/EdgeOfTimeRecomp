@@ -72,6 +72,7 @@
 #include <rex/memory/utils.h>
 #include "core/memory_helpers.h"
 #include "gpu/shaders/shader_dump.h"
+#include <rex/logging/api.h>
 #endif
 #include "gpu/pipeline/pipeline_cache.h"
 #include "platform/crash_handler.h"
@@ -926,8 +927,8 @@ void DumpShadersForRecompile() {
       eot::gpu::shader_dump::Run("/app0/gamedata", "/app0/shader-dump.bin", image, DumpNote, &totals);
   eot::platform::ShowInfo(
       "reeot - shaders dumped",
-      ok ? "This build has no shaders yet, so it wrote the game's to shader-dump.bin and closed. Recompile "
-           "them (RELEASE.md, step 5), build again, and the game draws."
+      ok ? "This build has no shaders yet, so it wrote the game's to shader-dump.bin and closes now. "
+           "Recompile them (RELEASE.md, step 5), build again, and the game draws."
          : "This build has no shaders yet, but writing them to shader-dump.bin failed; the lines above say "
            "where.");
 }
@@ -962,8 +963,12 @@ void ReeotApp::OnPreLaunchModule() {
 #if defined(__PROSPERO__)
   if (eot::gpu::GuestShaderCacheCount() == 0) {
     DumpShadersForRecompile();
-    app_context().QuitFromUIThread();
-    return;
+    // The runtime launches the module after this hook whatever it does, and the
+    // shutdown a quit starts then waits on the game's threads, which never end
+    // (the first dump on the console, 2026-10-13). The dump is whole and its
+    // file closed, so the app ends here.
+    rex::FlushLogging();
+    std::_Exit(0);
   }
 #endif
   eot::gpu::GuestShadersInit();
