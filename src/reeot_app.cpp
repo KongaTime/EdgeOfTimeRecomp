@@ -887,6 +887,9 @@ namespace eot::core {
 void DumpHeldWorkBufs();
 }
 
+// libSceSystemService, which the title links: "exit" asks the shell to close the title
+extern "C" int sceSystemServiceLoadExec(const char *path, const char *const *argv);
+
 namespace {
 
 void DumpNote(const char *line) {
@@ -966,9 +969,15 @@ void ReeotApp::OnPreLaunchModule() {
     // The runtime launches the module after this hook whatever it does, and the
     // shutdown a quit starts then waits on the game's threads, which never end
     // (the first dump on the console, 2026-10-13). The dump is whole and its
-    // file closed, so the app ends here.
+    // file closed, so the app ends here: through the shell, as the title's
+    // template ends a title (catchReturnFromMain), since _Exit kills it and the
+    // console reports a crash over a run that worked (the second dump). The
+    // shell closes the app on its own time; this thread waits for it, and the
+    // module never launches.
     rex::FlushLogging();
-    std::_Exit(0);
+    (void)sceSystemServiceLoadExec("exit", nullptr);
+    for (;;)
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 #endif
   eot::gpu::GuestShadersInit();
