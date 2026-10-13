@@ -41,7 +41,9 @@
 #include "gpu/textures.h"
 #include "gpu/trace.h"
 
+#if !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
+#endif
 #include <cmath>
 #include <rex/cvar.h>
 
@@ -623,6 +625,7 @@ void LogPerfLocked(VideoState &s) {
   }
   if (every <= 0 || static_cast<i32>(p.frames) < every)
     return;
+#if !defined(__PROSPERO__) // the PS5's one display is never hidden or unfocused
   static SDL_WindowFlags last_window = ~SDL_WindowFlags{0};
   int window_count = 0;
   if (SDL_Window **windows = SDL_GetWindows(&window_count)) {
@@ -635,6 +638,7 @@ void LogPerfLocked(VideoState &s) {
       last_window = now;
     }
   }
+#endif
   const f64 n = static_cast<f64>(p.frames);
   EOT_DEBUG("[perf] {} frames, {:.2f} ms/frame wall (p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f}) | cpu ms/frame: capture {:.2f} wait {:.2f} idle {:.2f} draw {:.2f} ({} draws, {} noop; "
             "setup {:.2f} tgt {:.2f} psolk {:.2f} ({} memo, {} hot) streams {:.2f} [vtxcopy {:.2f}] const {:.2f} [float {:.2f} bind {:.2f}, {} file hits, {} mask-fast, {} mask-miss] rec {:.2f} [state {:.2f} vbind {:.2f}]; idx {:.2f} outside) resolve {:.2f} ({}; {} copies, {} handed, {} noop, {} dead, {} refresh, {} twin, {:.1f} alias deferred, {:.2f} alias copied; mirror {:.2f} fb {:.2f} bind {:.2f} alias {:.2f} msaa {:.2f}) upload {:.2f} ({}) link "

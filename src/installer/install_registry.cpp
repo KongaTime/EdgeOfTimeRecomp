@@ -362,6 +362,8 @@ void SpawnDeferredDelete(const fs::path &root) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
   }
+#elif defined(__PROSPERO__)
+  (void)root; // a title starts no process; the console deletes its titles itself
 #else
   const pid_t pid = ::fork();
   if (pid < 0)

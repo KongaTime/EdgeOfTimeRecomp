@@ -11,7 +11,7 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#else
+#elif !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
 #endif
 
@@ -64,6 +64,13 @@ Display DisplayFor(void *native_window) {
     display.height = static_cast<uint32_t>(info.rcMonitor.bottom - info.rcMonitor.top);
     display.refresh_hz = RefreshRateOf(info.szDevice);
   }
+#elif defined(__PROSPERO__)
+  // The PS5's one display: the 3840x2160 mode nearest 60 Hz, which plume's
+  // VK_KHR_display surface takes (ps5/patches/plume-ps5.patch)
+  (void)native_window;
+  display.width = 3840;
+  display.height = 2160;
+  display.refresh_hz = 60;
 #else
   SDL_Window *sdl_window = static_cast<SDL_Window *>(native_window);
   if (!sdl_window) {

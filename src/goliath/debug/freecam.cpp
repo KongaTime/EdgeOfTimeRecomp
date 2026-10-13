@@ -20,7 +20,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#if !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
+#endif
 #include <atomic>
 #include <bit>
 #include <string>
@@ -144,7 +146,7 @@ int NativeKey(Key key) {
   }
   return 0;
 }
-#else
+#elif !defined(__PROSPERO__)
 SDL_Scancode NativeKey(Key key) {
   switch (key) {
   case Key::Shift:
@@ -181,6 +183,9 @@ SDL_Scancode NativeKey(Key key) {
 bool KeyDown(Key key) {
 #if defined(_WIN32)
   return (GetAsyncKeyState(NativeKey(key)) & 0x8000) != 0;
+#elif defined(__PROSPERO__)
+  (void)key;
+  return false; // no keyboard on the PS5: the free camera takes the controller alone
 #else
   const bool *state = SDL_GetKeyboardState(nullptr);
   const SDL_Scancode code = NativeKey(key);
@@ -201,6 +206,8 @@ bool WindowHasFocus() {
   DWORD pid = 0;
   GetWindowThreadProcessId(GetForegroundWindow(), &pid);
   return pid == GetCurrentProcessId();
+#elif defined(__PROSPERO__)
+  return true;
 #else
   SDL_Window *focused = SDL_GetKeyboardFocus();
   return focused != nullptr;

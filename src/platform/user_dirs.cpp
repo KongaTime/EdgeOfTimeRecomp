@@ -6,6 +6,9 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__PROSPERO__)
+#include <cstdint>
+extern "C" int32_t sceSystemServiceParamGetInt(int32_t id, int32_t *value);
 #else
 #include <SDL3/SDL.h>
 #endif
@@ -73,7 +76,31 @@ namespace eot::platform {
 
 namespace {
 
-#if !defined(_WIN32)
+#if defined(__PROSPERO__)
+// The console's system language (SCE_SYSTEM_SERVICE_PARAM_ID_LANG), as the
+// language tag the rest of this file reads
+std::string PreferredLanguage() {
+  constexpr int32_t kParamLanguage = 1;
+  int32_t language = -1;
+  if (sceSystemServiceParamGetInt(kParamLanguage, &language) != 0)
+    return {};
+  switch (language) {
+  case 0: return "ja";
+  case 1: case 18: return "en"; // US, UK
+  case 2: case 22: return "fr"; // France, Canada
+  case 3: case 20: return "es"; // Spain, Latin America
+  case 4: return "de";
+  case 5: return "it";
+  case 6: return "nl";
+  case 7: case 17: return "pt"; // Portugal, Brazil
+  case 8: return "ru";
+  case 9: return "ko";
+  case 10: case 11: return "zh";
+  case 16: return "pl";
+  default: return {};
+  }
+}
+#elif !defined(_WIN32)
 std::string PreferredLanguage() {
   int count = 0;
   SDL_Locale **locales = SDL_GetPreferredLocales(&count);

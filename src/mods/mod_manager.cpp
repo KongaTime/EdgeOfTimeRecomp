@@ -5,7 +5,9 @@
 #define EOT_MODS_HOST
 #include "mods/mod_manager.h"
 
+#if !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/string/utf8.h>
@@ -658,6 +660,18 @@ void ImportInThread(fs::path path) {
   FinishImport(ok ? EOT_MODS_DONE : EOT_MODS_FAILED, message);
 }
 
+#if defined(__PROSPERO__)
+// The PS5 has no file browser: mods are copied into the mods folder (over FTP),
+// and the game finds them there
+void OpenDialog(void *) {
+  std::string folder;
+  {
+    std::lock_guard lock(g_mutex);
+    folder = Utf8(ModsDirLocked());
+  }
+  FinishImport(EOT_MODS_FAILED, "Copy the mod's folder or package into " + folder + " and restart the game.");
+}
+#else
 void SDLCALL DialogDone(void *, const char *const *files, int) {
   if (!files) {
     EOT_WARN("[mods] the file browser failed: {}", SDL_GetError());
@@ -694,6 +708,7 @@ void SDLCALL OpenDialog(void *) {
   SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, &DialogDone, nullptr, props);
   SDL_DestroyProperties(props);
 }
+#endif
 
 void CopyOut(char *out, size_t size, const std::string &text) {
   if (!out || size == 0)
@@ -903,10 +918,14 @@ extern "C" int32_t eot_mods_add_begin(void) {
       return 0;
     g_import_message.clear();
   }
+#if defined(__PROSPERO__)
+  OpenDialog(nullptr);
+#else
   if (!SDL_RunOnMainThread(&OpenDialog, nullptr, false)) {
     EOT_WARN("[mods] SDL_RunOnMainThread failed ({}); opening the file browser from here", SDL_GetError());
     OpenDialog(nullptr);
   }
+#endif
   return 1;
 }
 
@@ -955,6 +974,11 @@ extern "C" int32_t eot_mods_open_folder(void) {
   }
   std::error_code ec;
   fs::create_directories(dir, ec);
+#if defined(__PROSPERO__)
+  // No file manager to show it in: the folder is where FTP puts mods
+  EOT_INFO("[mods] the mods folder is {}", Utf8(dir));
+  return 0;
+#else
   const std::u8string generic = dir.generic_u8string();
   const std::string url = "file:///" + std::string(generic.begin(), generic.end());
   if (!SDL_OpenURL(url.c_str())) {
@@ -962,6 +986,7 @@ extern "C" int32_t eot_mods_open_folder(void) {
     return 0;
   }
   return 1;
+#endif
 }
 
 namespace eot::mods {

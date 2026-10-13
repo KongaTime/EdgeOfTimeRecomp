@@ -83,6 +83,10 @@ bool FileHolds(const fs::path &path, std::span<const uint8_t> bytes) {
 }
 
 void WriteAsset(const EmbeddedAsset &asset, const fs::path &path, size_t &written) {
+  // A build without the game's packs embeds no packages (the PS5 title): the
+  // game folder copied from a PC install already holds them
+  if (asset.size == 0)
+    return;
   if (FileHolds(path, asset.bytes()))
     return;
   std::error_code ec;

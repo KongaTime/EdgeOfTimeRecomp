@@ -24,6 +24,9 @@
 #include "gpu/draw.h"
 #include "gpu/settings.h"
 #include "gpu/textures.h"
+#if defined(__PROSPERO__)
+#include <pthread_np.h> // pthread_set_name_np, libkernel's
+#endif
 
 namespace eot::gpu {
 
@@ -164,6 +167,8 @@ void WorkerMain() {
   SetThreadDescription(GetCurrentThread(), L"reeot render");
 #elif defined(__APPLE__)
   pthread_setname_np("reeot render");
+#elif defined(__PROSPERO__)
+  pthread_set_name_np(pthread_self(), "reeot render");
 #else
   pthread_setname_np(pthread_self(), "reeot render");
 #endif

@@ -3117,7 +3117,16 @@ void ExecuteDraw(u32 device_va, u32 prim, GeometryPlan &geom,
     PoolDrainRetired(s, vertex_mirrors().pool);
     return;
   }
+#if defined(__PROSPERO__)
+  // The PS5 aligns thread-locals to 32 bytes at most, and the packet's device
+  // window wants 64: each thread's packet lives on the heap instead
+  static thread_local std::unique_ptr<DrawPacket> packet_storage;
+  if (!packet_storage)
+    packet_storage = std::make_unique<DrawPacket>();
+  DrawPacket &packet = *packet_storage;
+#else
   static thread_local DrawPacket packet;
+#endif
   const bool captured = CaptureDraw(s, device_va, prim, geom, device_image, packet);
   PoolDrainRetired(s, vertex_mirrors().pool);
   if (!captured)

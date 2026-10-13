@@ -1,0 +1,214 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index d4d3c51..ca09cad 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -39,6 +39,18 @@ namespace plume {
+     typedef HWND RenderWindow;
+ #elif defined(__ANDROID__)
+     typedef ANativeWindow* RenderWindow;
++#elif defined(__PROSPERO__)
++    // The PS5: the display itself, through VK_KHR_display. The size asked of it
++    // (0 for the display's own 3840x2160); the swap chain records the size of
++    // the mode it took.
++    struct RenderWindow {
++        uint32_t width;
++        uint32_t height;
++        bool operator==(const struct RenderWindow& rhs) const {
++            return width == rhs.width && height == rhs.height;
++        }
++        bool operator!=(const struct RenderWindow& rhs) const { return !(*this == rhs); }
++    };
+ #elif defined(PLUME_SDL_VULKAN_ENABLED)
+     typedef SDL_Window *RenderWindow;
+ #elif defined(__linux__)
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index c0b9c11..ba82a84 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -6,7 +6,11 @@
+ //
+ 
+ #define VMA_IMPLEMENTATION
+-#define VOLK_IMPLEMENTATION 
++// A PS5 title whose template compiles volk already defines
++// PLUME_NO_VOLK_IMPLEMENTATION: one volk per program
++#if !defined(PLUME_NO_VOLK_IMPLEMENTATION)
++#define VOLK_IMPLEMENTATION
++#endif
+ 
+ #include "plume_vulkan.h"
+ 
+@@ -56,6 +60,8 @@ namespace plume {
+         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+ #   elif defined(__ANDROID__)
+         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
++#   elif defined(__PROSPERO__)
++        VK_KHR_DISPLAY_EXTENSION_NAME,
+ #   elif defined(__linux__)
+ #   if !defined(PLUME_SDL_VULKAN_ENABLED)
+         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+@@ -2091,6 +2097,109 @@ namespace plume {
+ 
+     // VulkanSwapChain
+ 
++#   if defined(__PROSPERO__)
++    // The PS5's display, as PS5_VulkanTemplate's base/VulkanSwapChain.cpp and
++    // TheSimpsonsGame-PS5-Builder's vulkan_display_prospero.cpp find it on
++    // PS5_Mesa's VideoOut: a mode of the size asked (the display's own 3840x2160
++    // when none is), the one nearest 60 Hz, on a plane that shows it whole.
++    // The chosen size goes back into window.
++    static bool createProsperoDisplaySurface(VkInstance instance, VkPhysicalDevice physicalDevice,
++            RenderWindow &window, VkSurfaceKHR *surface) {
++        const uint32_t wantWidth = window.width ? window.width : 3840;
++        const uint32_t wantHeight = window.height ? window.height : 2160;
++        uint32_t displayCount = 0;
++        vkGetPhysicalDeviceDisplayPropertiesKHR(physicalDevice, &displayCount, nullptr);
++        std::vector<VkDisplayPropertiesKHR> displays(displayCount);
++        vkGetPhysicalDeviceDisplayPropertiesKHR(physicalDevice, &displayCount, displays.data());
++        displays.resize(displayCount);
++        uint32_t planeCount = 0;
++        vkGetPhysicalDeviceDisplayPlanePropertiesKHR(physicalDevice, &planeCount, nullptr);
++        std::vector<VkDisplayPlanePropertiesKHR> planes(planeCount);
++        vkGetPhysicalDeviceDisplayPlanePropertiesKHR(physicalDevice, &planeCount, planes.data());
++        planes.resize(planeCount);
++        if (displays.empty() || planes.empty()) {
++            fprintf(stderr, "PS5: the driver reports %u displays and %u planes.\n", displayCount, planeCount);
++            return false;
++        }
++
++        VkDisplayKHR display = VK_NULL_HANDLE;
++        VkDisplayModePropertiesKHR mode = {};
++        uint32_t bestDistance = UINT32_MAX;
++        for (const VkDisplayPropertiesKHR &properties : displays) {
++            uint32_t modeCount = 0;
++            vkGetDisplayModePropertiesKHR(physicalDevice, properties.display, &modeCount, nullptr);
++            std::vector<VkDisplayModePropertiesKHR> modes(modeCount);
++            vkGetDisplayModePropertiesKHR(physicalDevice, properties.display, &modeCount, modes.data());
++            modes.resize(modeCount);
++            for (const VkDisplayModePropertiesKHR &candidate : modes) {
++                const VkDisplayModeParametersKHR &p = candidate.parameters;
++                if ((p.visibleRegion.width != wantWidth) || (p.visibleRegion.height != wantHeight)) {
++                    continue;
++                }
++                const uint32_t distance = (p.refreshRate > 60000) ? (p.refreshRate - 60000) : (60000 - p.refreshRate);
++                if (distance < bestDistance) {
++                    bestDistance = distance;
++                    display = properties.display;
++                    mode = candidate;
++                }
++            }
++        }
++        if (display == VK_NULL_HANDLE) {
++            fprintf(stderr, "PS5: no %ux%u display mode.\n", wantWidth, wantHeight);
++            return false;
++        }
++
++        for (uint32_t planeIndex = 0; planeIndex < planeCount; planeIndex++) {
++            if ((planes[planeIndex].currentDisplay != VK_NULL_HANDLE) && (planes[planeIndex].currentDisplay != display)) {
++                continue;
++            }
++            uint32_t supportedCount = 0;
++            vkGetDisplayPlaneSupportedDisplaysKHR(physicalDevice, planeIndex, &supportedCount, nullptr);
++            std::vector<VkDisplayKHR> supported(supportedCount);
++            vkGetDisplayPlaneSupportedDisplaysKHR(physicalDevice, planeIndex, &supportedCount, supported.data());
++            supported.resize(supportedCount);
++            if (std::find(supported.begin(), supported.end(), display) == supported.end()) {
++                continue;
++            }
++            VkDisplayPlaneCapabilitiesKHR capabilities = {};
++            vkGetDisplayPlaneCapabilitiesKHR(physicalDevice, mode.displayMode, planeIndex, &capabilities);
++            VkDisplayPlaneAlphaFlagBitsKHR alpha = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
++            if (!(capabilities.supportedAlpha & alpha)) {
++                if (capabilities.supportedAlpha & VK_DISPLAY_PLANE_ALPHA_GLOBAL_BIT_KHR) {
++                    alpha = VK_DISPLAY_PLANE_ALPHA_GLOBAL_BIT_KHR;
++                }
++                else if (capabilities.supportedAlpha & VK_DISPLAY_PLANE_ALPHA_PER_PIXEL_BIT_KHR) {
++                    alpha = VK_DISPLAY_PLANE_ALPHA_PER_PIXEL_BIT_KHR;
++                }
++                else if (capabilities.supportedAlpha & VK_DISPLAY_PLANE_ALPHA_PER_PIXEL_PREMULTIPLIED_BIT_KHR) {
++                    alpha = VK_DISPLAY_PLANE_ALPHA_PER_PIXEL_PREMULTIPLIED_BIT_KHR;
++                }
++            }
++            VkDisplaySurfaceCreateInfoKHR createInfo = {};
++            createInfo.sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR;
++            createInfo.displayMode = mode.displayMode;
++            createInfo.planeIndex = planeIndex;
++            createInfo.planeStackIndex = planes[planeIndex].currentStackIndex;
++            createInfo.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++            createInfo.globalAlpha = 1.0f;
++            createInfo.alphaMode = alpha;
++            createInfo.imageExtent = mode.parameters.visibleRegion;
++            const VkResult res = vkCreateDisplayPlaneSurfaceKHR(instance, &createInfo, nullptr, surface);
++            if (res != VK_SUCCESS) {
++                fprintf(stderr, "vkCreateDisplayPlaneSurfaceKHR failed with error code 0x%X.\n", res);
++                return false;
++            }
++            window.width = mode.parameters.visibleRegion.width;
++            window.height = mode.parameters.visibleRegion.height;
++            fprintf(stderr, "PS5: display surface %ux%u at %u mHz, plane %u.\n", window.width, window.height,
++                mode.parameters.refreshRate, planeIndex);
++            return true;
++        }
++        fprintf(stderr, "PS5: no plane shows the %ux%u mode.\n", wantWidth, wantHeight);
++        return false;
++    }
++#   endif
++
+     VulkanSwapChain::VulkanSwapChain(VulkanCommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
+         assert(commandQueue != nullptr);
+         assert(desc.textureCount > 0);
+@@ -2113,6 +2222,12 @@ namespace plume {
+             fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
+             return;
+         }
++#   elif defined(__PROSPERO__)
++        VulkanInterface *renderInterface = commandQueue->device->renderInterface;
++        if (!createProsperoDisplaySurface(renderInterface->instance, commandQueue->device->physicalDevice,
++                this->desc.renderWindow, &surface)) {
++            return;
++        }
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
+         if (!SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, nullptr, &surface)) {
+@@ -2480,6 +2595,10 @@ namespace plume {
+         GetClientRect(desc.renderWindow, &rect);
+         dstWidth = rect.right - rect.left;
+         dstHeight = rect.bottom - rect.top;
++#   elif defined(__PROSPERO__)
++        // The display mode the swap chain took (createProsperoDisplaySurface)
++        dstWidth = desc.renderWindow.width;
++        dstHeight = desc.renderWindow.height;
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
+ #   elif defined(__ANDROID__)
+@@ -4477,7 +4596,14 @@ namespace plume {
+     // VulkanInterface
+ 
+     VulkanInterface::VulkanInterface() {
++#   if defined(__PROSPERO__)
++        // No Vulkan loader on the console: the RADV linked into the title is
++        // the driver, and its ICD entry point gives every command
++        volkInitializeCustom(vk_icdGetInstanceProcAddr);
++        VkResult res = (vkCreateInstance != nullptr) ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
++#   else
+         VkResult res = volkInitialize();
++#   endif
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
+             return;
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 589d0f9..5bffce8 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -30,6 +30,11 @@
+ 
+ #include <volk.h>
+ 
++#if defined(__PROSPERO__)
++// The ICD entry point of the RADV linked into a PS5 title (no Vulkan loader)
++extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
++#endif
++
+ #ifdef __clang__
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wnullability-completeness"

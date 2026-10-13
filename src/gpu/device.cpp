@@ -19,7 +19,9 @@
 #include <thread>
 #include <unordered_map>
 
+#if !defined(__PROSPERO__)
 #include <SDL3/SDL.h>
+#endif
 #include <plume_render_interface.h>
 #include <rex/cvar.h>
 #include <plume_render_interface_builders.h>
@@ -1035,6 +1037,12 @@ plume::RenderPipeline *GetDepthCopyPipeline(VideoState &s, plume::RenderFormat d
 namespace {
 
 std::string PanelMode() {
+#if defined(__PROSPERO__)
+  // One display, its mode chosen by plume when it made the swap chain
+  if (const auto &chain = state().swap_chain)
+    return fmt::format("{}x{} PS5 display", chain->getWidth(), chain->getHeight());
+  return "PS5 display";
+#else
   int count = 0;
   SDL_Window **windows = SDL_GetWindows(&count);
   SDL_Window *win = (windows && count > 0) ? windows[0] : nullptr;
@@ -1045,6 +1053,7 @@ std::string PanelMode() {
   if (!mode)
     return "unknown";
   return fmt::format("{}x{} @ {:.0f} Hz", mode->w, mode->h, mode->refresh_rate);
+#endif
 }
 
 }
@@ -1078,6 +1087,10 @@ bool Video::CreateHostDevice(rex::ui::Window *window) {
     EOT_ERROR("Window has no native HWND yet");
     return false;
   }
+#elif defined(__PROSPERO__)
+  // The display: plume makes its surface with VK_KHR_display at this size
+  // (ps5/patches/plume-ps5.patch)
+  render_window = {window->GetActualPhysicalWidth(), window->GetActualPhysicalHeight()};
 #elif defined(PLUME_SDL_VULKAN_ENABLED)
   {
     int count = 0;

@@ -5,14 +5,20 @@
 #include "gpu/shaders/guest_shaders.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <xxhash.h>
 #include <zstd.h>
+
+#if defined(__PROSPERO__)
+#include <rex/memory/utils.h>
+#endif
 
 #include "core/logging.h"
 #include "core/profiling.h"
@@ -30,6 +36,31 @@
 namespace eot::gpu {
 
 namespace {
+
+#if defined(__PROSPERO__)
+// The PS5 build's shaders are recompiled from the containers the console
+// dumps (the title's shader dump app reads the packs); a shader the game
+// makes that is not in the cache, one in Default.xex for one, goes to
+// /app0/shader-misses.bin the same way, once a run, its two parts as one
+// container: what XenosRecomp scans for, and the bytes the hash covers
+void RecordShaderMiss(u64 hash, const u8 *virtual_bytes, u32 virtual_size, const u8 *physical_bytes,
+                      u32 physical_size) {
+  static std::mutex mutex;
+  static std::unordered_set<u64> recorded;
+  static FILE *file = nullptr;
+  std::lock_guard lock(mutex);
+  if (!recorded.insert(hash).second)
+    return;
+  if (!file && !(file = std::fopen("/app0/shader-misses.bin", "ab")))
+    return;
+  static const u8 kPad[16] = {};
+  std::fwrite(virtual_bytes, 1, virtual_size, file);
+  if (physical_size)
+    std::fwrite(physical_bytes, 1, physical_size, file);
+  std::fwrite(kPad, 1, sizeof(kPad), file);
+  std::fflush(file);
+}
+#endif
 
 std::string GuestEntryPoint(const u8 *bytes, size_t size) {
 #if defined(EOT_D3D12)
@@ -139,8 +170,84 @@ void StrictMathForMetal(std::vector<u8> &spirv) {
 }
 #endif
 
+#if defined(__PROSPERO__)
+// The decompressed cache, about 520 MiB of SPIR-V for the whole game, is more
+// than the PS5 title's flexible memory (448 MiB, where malloc's memory comes
+// from), so it lives in direct memory, as guest memory does
+class CacheBlob {
+ public:
+  bool empty() const { return !size_; }
+  const u8 *data() const { return data_; }
+  u8 *data() { return data_; }
+  size_t size() const { return size_; }
+  void resize(size_t size) {
+    clear();
+    void *p = rex::memory::AllocFixed(nullptr, size, rex::memory::AllocationType::kReserveCommit,
+                                      rex::memory::PageAccess::kReadWrite);
+    if (!p) {
+      EOT_ERROR("[shaders] no direct memory for the {} MB shader cache", size >> 20);
+      return;
+    }
+    data_ = static_cast<u8 *>(p);
+    size_ = size;
+  }
+  CacheBlob() = default;
+  CacheBlob(const CacheBlob &) = delete;
+  CacheBlob &operator=(const CacheBlob &) = delete;
+  ~CacheBlob() { clear(); }
+  void clear() {
+    if (data_)
+      rex::memory::DeallocFixed(data_, 0, rex::memory::DeallocationType::kRelease);
+    data_ = nullptr;
+    size_ = 0;
+  }
+
+ private:
+  u8 *data_ = nullptr;
+  size_t size_ = 0;
+};
+
+// The title can ship the compressed SPIR-V as a file beside eboot.bin
+// (ps5/tools/split-shader-cache.py), so a build that only changes code is a
+// small download; its cache source then defines this as 1. This weak 0 is for
+// every other build: the console's tools refuse a title with a symbol left
+// undefined, weak or not.
+extern "C" __attribute__((weak)) const unsigned char reeot_spirv_cache_external = 0;
+
+// Reads that file into direct memory; it must be the one made with this
+// eboot.bin's entry table, which its size stands in for
+bool ReadExternalSpirv(CacheBlob &out, size_t compressed_size) {
+  constexpr const char *kPath = "/app0/shader-cache.zst";
+  FILE *f = std::fopen(kPath, "rb");
+  if (!f) {
+    EOT_ERROR("[shaders] no {}: copy the shader-cache.zst that came with this eboot.bin next to it; "
+              "no guest shader will run", kPath);
+    return false;
+  }
+  std::fseek(f, 0, SEEK_END);
+  const long size = std::ftell(f);
+  std::fseek(f, 0, SEEK_SET);
+  bool ok = size == static_cast<long>(compressed_size);
+  if (!ok)
+    EOT_ERROR("[shaders] {} is {} bytes where this eboot.bin's shaders are {}: copy the "
+              "shader-cache.zst that came with it; no guest shader will run",
+              kPath, size, compressed_size);
+  if (ok) {
+    out.resize(compressed_size);
+    ok = out.size() == compressed_size &&
+         std::fread(out.data(), 1, compressed_size, f) == compressed_size;
+    if (!ok)
+      EOT_ERROR("[shaders] could not read {}", kPath);
+  }
+  std::fclose(f);
+  return ok;
+}
+#else
+using CacheBlob = std::vector<u8>;
+#endif
+
 struct CacheState {
-  std::vector<u8> blob;
+  CacheBlob blob;
   std::unordered_map<u64, const ShaderCacheEntry *> by_hash;
   std::unordered_map<u64, u64> canonical;
   std::mutex host_mutex;
@@ -207,12 +314,24 @@ bool GuestShadersInit() {
   const size_t compressed_size = g_spirvCacheCompressedSize;
   const size_t decompressed_size = g_spirvCacheDecompressedSize;
 #endif
+#if defined(__PROSPERO__)
+  CacheBlob external;
+  // Read as memory: the weak 0 above may not be the definition the link keeps
+  if (*static_cast<const volatile unsigned char *>(&reeot_spirv_cache_external) && g_shaderCacheEntryCount &&
+      decompressed_size) {
+    if (!ReadExternalSpirv(external, compressed_size))
+      return false;
+    compressed = external.data();
+  }
+#endif
   if (g_shaderCacheEntryCount == 0 || decompressed_size == 0) {
     EOT_ERROR("[shaders] the embedded shader cache is empty: build "
               "reeot_shader_cache_regen and rebuild; no guest shader will run");
     return false;
   }
   c.blob.resize(decompressed_size);
+  if (c.blob.size() != decompressed_size)
+    return false;
   const size_t got =
       ZSTD_decompress(c.blob.data(), decompressed_size, compressed, compressed_size);
   if (ZSTD_isError(got) || got != decompressed_size) {
@@ -401,6 +520,10 @@ GuestShader *RegisterGuestShader(VideoState &s, u32 object_va, bool is_pixel) {
   sh->entry = it == c.by_hash.end() ? nullptr : it->second;
   if (sh->entry)
     sh->usesFloatConstants = sh->entry->usesFloatConstants != 0;
+#if defined(__PROSPERO__)
+  else
+    RecordShaderMiss(hash, virtual_bytes, virtual_size, physical_bytes, physical_size);
+#endif
   sh->floatConstantRegs =
       FloatConstantRegisters(virtual_bytes, virtual_size, header->constantTableOffset, is_pixel);
   const u32 shader_off = header->shaderOffset;

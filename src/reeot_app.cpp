@@ -19,10 +19,15 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
+#if defined(__PROSPERO__)
+#include <rex/ui/startup_prospero.h>
+#else
 #include <SDL3/SDL.h>
-#if !defined(_WIN32)
+#endif
+#if !defined(_WIN32) && !defined(__PROSPERO__)
 #include <dlfcn.h>
 #endif
 #include <imgui_internal.h>
@@ -62,6 +67,12 @@
 #include "installer/install_registry.h"
 #include "mods/mod_manager.h"
 #include "gpu/shaders/guest_shaders.h"
+#if defined(__PROSPERO__)
+#include <span>
+#include <rex/memory/utils.h>
+#include "core/memory_helpers.h"
+#include "gpu/shaders/shader_dump.h"
+#endif
 #include "gpu/pipeline/pipeline_cache.h"
 #include "platform/crash_handler.h"
 #include "platform/desktop_shortcut.h"
@@ -156,7 +167,7 @@ void SaveProfileConfig(const std::filesystem::path &path) {
 // The SDK opens this module by its bare name, which dlopen does not look for beside the
 // executable.
 void PreloadGameLogic() {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__PROSPERO__) // the PS5 title links it in
   static void *handle = nullptr;
   if (handle)
     return;
@@ -343,6 +354,11 @@ bool IsCliCommand(std::string_view word) {
 
 std::optional<fs::path> ReeotApp::NamedGameFolder() const {
   std::string named = REXCVAR_GET(game_data_root);
+#if defined(__PROSPERO__)
+  // The title's game folder, copied from a PC install (docs/PS5-PORTING.md)
+  if (named.empty())
+    named = "/app0/gamedata";
+#endif
   if (named.empty())
     if (auto positional = GetArgument("command"); positional && !IsCliCommand(*positional))
       named = *positional;
@@ -352,12 +368,18 @@ std::optional<fs::path> ReeotApp::NamedGameFolder() const {
 }
 
 std::optional<fs::path> ReeotApp::EarlyInstallRoot() const {
+#if defined(__PROSPERO__)
+  // Profiles, mods and logs in the title's state folder, writable even when
+  // /app0 is a read-only image
+  return fs::path(prospero_state_root());
+#else
   if (auto named = NamedGameFolder())
     return named->parent_path();
   if (auto cfg = eot::installer::ReadInstallRegistry())
     if (cfg->schema_version == eot::installer::kInstallSchemaVersion && eot::installer::InstallIsPresent(*cfg))
       return cfg->install_root;
   return std::nullopt;
+#endif
 }
 
 void ReeotApp::UseInstallRoot(const fs::path &root, rex::PathConfig &paths) {
@@ -493,11 +515,13 @@ void ReeotApp::OnPostInitLogging() {
              xlanguage);
   }
 
+#if !defined(__PROSPERO__) // the title is the installed copy
   eot::platform::UpdateInstalledCopy(install_root_);
   if (const auto done = eot::platform::LastInstallUpdate())
     eot::platform::ShowInfo("reeot updated", "reeot " + done->version + " is now installed in\n" +
                                                  done->location +
                                                  "\n\nYour installed copy is up to date.");
+#endif
 
   if (!eot::platform::AcquireInstanceLock()) {
     eot::platform::ShowFatalError("reeot is already running", "Close the running copy before starting another.");
@@ -540,6 +564,15 @@ ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(re
     paths.game_data_root = *named;
     return paths;
   }
+#if defined(__PROSPERO__)
+  // No installer on the console: the game folder comes from a PC install
+  (void)resume;
+  eot::platform::ShowFatalError("reeot - game files missing",
+                                "No Default.xex in /app0/gamedata. Install the game with reeot on a PC, then "
+                                "copy its game folder into the title's gamedata folder.");
+  app_context().QuitFromUIThread();
+  return std::nullopt;
+#endif
   if (const std::string named = REXCVAR_GET(game_data_root); !named.empty())
     EOT_WARN("[install] {} holds no Default.xex; looking for an install instead", named);
 
@@ -848,7 +881,71 @@ void ReeotApp::InstallOverlayHook() {
   });
 }
 
+#if defined(__PROSPERO__)
+namespace eot::core {
+void DumpHeldWorkBufs();
+}
+
+namespace {
+
+void DumpNote(const char *line) {
+  EOT_INFO("[shaders] {}", line);
+  prospero_startup_log(line);
+}
+
+// A PS5 build with no shader cache is the shader dump. XenosRecomp needs the
+// game's shader containers: the packs' and Default.xex's own, which no pack
+// holds and which are only whole once the runtime has loaded and patched the
+// module, as it has before the module launches (the first builds drew nothing
+// until those were added from what the game recorded while it ran). Both go to
+// /app0/shader-dump.bin (gpu/shaders/shader_dump.h); Default.xex is read where
+// the runtime says its pages are readable.
+void DumpShadersForRecompile() {
+  std::vector<std::span<const uint8_t>> image;
+  const uint32_t base = PPCImageConfig.image_base;
+  const uint32_t end = base + PPCImageConfig.image_size;
+  for (uint32_t va = base; va < end;) {
+    uint8_t *host = eot::mem::at<uint8_t>(va);
+    size_t length = 0;
+    rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
+    if (!host || !rex::memory::QueryProtect(host, length, access) || !length)
+      break;
+    const uint32_t run = uint32_t(std::min<uint64_t>(length, end - va));
+    if (static_cast<int>(access) & static_cast<int>(rex::memory::PageAccess::kReadOnly))
+      image.emplace_back(host, run);
+    va += run;
+  }
+  size_t readable = 0;
+  for (const auto &range : image)
+    readable += range.size();
+  const std::string about = std::format("dump: Default.xex at {:#x}, {} KB of {} KB readable", base,
+                                        readable >> 10, PPCImageConfig.image_size >> 10);
+  DumpNote(about.c_str());
+  eot::gpu::shader_dump::Totals totals;
+  const bool ok =
+      eot::gpu::shader_dump::Run("/app0/gamedata", "/app0/shader-dump.bin", image, DumpNote, &totals);
+  eot::platform::ShowInfo(
+      "reeot - shaders dumped",
+      ok ? "This build has no shaders yet, so it wrote the game's to shader-dump.bin and closed. Recompile "
+           "them (RELEASE.md, step 5), build again, and the game draws."
+         : "This build has no shaders yet, but writing them to shader-dump.bin failed; the lines above say "
+           "where.");
+}
+
+}  // namespace
+#endif
+
 void ReeotApp::OnPreLaunchModule() {
+#if defined(__PROSPERO__)
+  // Beside the runtime's stall dumps: the game's WorkBuf locks still held, every
+  // 10 s for the first two minutes (core/critical_section.cpp)
+  std::thread([] {
+    for (int round = 0; round < 12; ++round) {
+      std::this_thread::sleep_for(std::chrono::seconds(10));
+      eot::core::DumpHeldWorkBufs();
+    }
+  }).detach();
+#endif
   eot::platform::InstallCrashHandler();
   PreloadGameLogic();
 #if defined(_WIN32)
@@ -862,6 +959,13 @@ void ReeotApp::OnPreLaunchModule() {
   InstallOverlayHook();
   eot::ui::StartAchievementFeed();
   app_context().CallInUIThreadDeferred([] { eot::platform::RaiseMainWindow(); });
+#if defined(__PROSPERO__)
+  if (eot::gpu::GuestShaderCacheCount() == 0) {
+    DumpShadersForRecompile();
+    app_context().QuitFromUIThread();
+    return;
+  }
+#endif
   eot::gpu::GuestShadersInit();
   eot::gpu::PsoCachePrecache();
 }
