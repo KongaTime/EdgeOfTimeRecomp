@@ -13,18 +13,12 @@
 // The copy: one thread reads the image in 8 MB pieces while this one writes the
 // last piece out with write(2), each file as <name>.part, renamed once whole. The
 // second try wrote through std::ofstream, the read and write in turn, and ran at
-// 15 MB/s for the first GB, then near 1 MB/s. The third, through write(2), ran at
-// 240 MB/s for 1.5 GB and fell to 10-40, yet a fresh start of the app ran at 200
-// again: what the app had read and written was held in the file cache, and the
-// console slows an app whose cache is full. So both sides use O_DIRECT, from and
-// into page-aligned buffers, which leaves nothing in the cache; where the system
-// refuses a direct transfer (EINVAL), that file goes back to cached I/O.
+// 15 MB/s for the first GB, then near 1 MB/s.
 
 #include "installer/image_install.h"
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <cfloat>
 #include <chrono>
 #include <condition_variable>
@@ -38,7 +32,6 @@
 #include <unistd.h>
 
 #include <imgui.h>
-#include <rex/logging/api.h>
 #include <rex/ui/immediate_drawer.h>
 #include <rex/ui/windowed_app_context.h>
 
@@ -52,10 +45,6 @@
 #include "installer/disc_install.h"
 #include "ui/theme.h"
 
-#if defined(__PROSPERO__)
-extern "C" int sceSystemServiceLoadExec(const char *path, const char *const *argv);
-#endif
-
 namespace eot::installer {
 
 namespace {
@@ -65,17 +54,6 @@ namespace fs = std::filesystem;
 constexpr uint64_t kSector = 0x800;
 constexpr size_t kPiece = 8 << 20;
 constexpr size_t kPieces = 4;
-
-// Clears O_DIRECT on <fd> after the system refused a direct transfer
-bool DropDirect(int fd) {
-  const int flags = fcntl(fd, F_GETFL);
-  if (flags < 0 || !(flags & O_DIRECT))
-    return false;
-  static std::atomic<bool> told{false};
-  if (!told.exchange(true))
-    EOT_WARN("[install] the system refused a direct transfer; such files go through the cache");
-  return fcntl(fd, F_SETFL, flags & ~O_DIRECT) == 0;
-}
 
 bool HasExtension(const fs::path &path, std::string_view extension) {
   std::string ext = path.extension().string();
@@ -96,12 +74,7 @@ double Now() {
 
 class Disc {
 public:
-  // <direct>: past the file cache (the extraction; the listing's small reads are cached)
-  explicit Disc(const fs::path &path, bool direct = false)
-      : fd_(direct ? open(path.c_str(), O_RDONLY | O_DIRECT) : -1) {
-    if (fd_ < 0)
-      fd_ = open(path.c_str(), O_RDONLY);
-  }
+  explicit Disc(const fs::path &path) : fd_(open(path.c_str(), O_RDONLY)) {}
   ~Disc() {
     if (fd_ >= 0)
       close(fd_);
@@ -113,8 +86,6 @@ public:
     auto *p = static_cast<uint8_t *>(out);
     while (length) {
       const ssize_t n = pread(fd_, p, length, static_cast<off_t>(offset));
-      if (n < 0 && errno == EINVAL && DropDirect(fd_))
-        continue;
       if (n <= 0)
         return false;
       p += n;
@@ -233,7 +204,7 @@ struct Piece {
   size_t file = 0;
   uint64_t at = 0;
   size_t length = 0;
-  uint8_t *buffer = nullptr;
+  std::vector<uint8_t> *buffer = nullptr;
   bool failed = false;
 };
 
@@ -263,8 +234,6 @@ private:
 bool WriteAll(int fd, const uint8_t *p, size_t length) {
   while (length) {
     const ssize_t n = write(fd, p, length);
-    if (n < 0 && errno == EINVAL && DropDirect(fd))
-      continue;
     if (n <= 0)
       return false;
     p += n;
@@ -274,7 +243,7 @@ bool WriteAll(int fd, const uint8_t *p, size_t length) {
 }
 
 void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &progress) {
-  Disc disc(plan.iso, true);
+  Disc disc(plan.iso);
   std::string error;
   if (!disc.Open(error)) {
     progress.Fail(plan.iso.filename().string() + ": " + error);
@@ -297,13 +266,10 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
   progress.bytes_done.store(kept);
   EOT_INFO("[install] {} of {} files to extract; {} MB already there", todo.size(), plan.files.size(), kept >> 20);
 
-  // Page-aligned, as direct transfers want them
-  constexpr size_t kAlign = 0x4000;
-  std::vector<uint8_t> memory(kPiece * kPieces + kAlign);
-  uint8_t *aligned = memory.data() + (kAlign - reinterpret_cast<uintptr_t>(memory.data()) % kAlign) % kAlign;
+  std::vector<std::vector<uint8_t>> buffers(kPieces, std::vector<uint8_t>(kPiece));
   PieceQueue full, empty;
-  for (size_t i = 0; i < kPieces; ++i)
-    empty.Push({0, 0, 0, aligned + i * kPiece});
+  for (auto &buffer : buffers)
+    empty.Push({0, 0, 0, &buffer});
   std::atomic<bool> stop{false};
   std::atomic<uint64_t> read_us{0};
   std::thread reader([&] {
@@ -317,7 +283,7 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
         piece.at = at;
         piece.length = size_t(std::min<uint64_t>(kPiece, file.size - at));
         const double t = Now();
-        piece.failed = piece.length && !disc.Read(file.offset + at, piece.buffer, piece.length);
+        piece.failed = piece.length && !disc.Read(file.offset + at, piece.buffer->data(), piece.length);
         read_us.fetch_add(uint64_t((Now() - t) * 1e6));
         full.Push(piece);
         if (piece.failed)
@@ -352,10 +318,6 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
     return true;
   };
   for (size_t done_files = 0; ok && done_files < todo.size();) {
-    if (progress.stop.load()) {
-      ok = false;  // not a failure: the app starts again and carries on
-      break;
-    }
     Piece piece = full.Pop();
     const DiscFile &file = plan.files[piece.file];
     if (piece.failed) {
@@ -374,9 +336,7 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
       fs::create_directories(dest.parent_path(), ec);
       fs::path part = dest;
       part += ".part";
-      fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0666);
-      if (fd < 0)
-        fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+      fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
       if (fd < 0) {
         progress.Fail("could not create " + part.string());
         ok = false;
@@ -384,7 +344,7 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
       }
     }
     const double t = Now();
-    if (!WriteAll(fd, piece.buffer, piece.length)) {
+    if (!WriteAll(fd, piece.buffer->data(), piece.length)) {
       progress.Fail("could not write " + file.path + " (is the storage full?)");
       ok = false;
       break;
@@ -514,9 +474,9 @@ std::thread RunImageInstall(const ImagePlan &plan, const fs::path &game, ImagePr
     fs::create_directories(game, ec);
     if (!plan.iso.empty())
       ExtractDisc(plan, game, progress);
-    if (!progress.failed.load() && !progress.stop.load() && !plan.update.empty())
+    if (!progress.failed.load() && !plan.update.empty())
       ExtractUpdate(plan, game, progress);
-    if (!progress.failed.load() && !progress.stop.load())
+    if (!progress.failed.load())
       EOT_INFO("[install] installed from {} and {} in {:.0f} s", plan.iso.string(), plan.update.string(),
                Now() - started);
     progress.complete.store(true);
@@ -540,72 +500,6 @@ ImageInstallDialog::~ImageInstallDialog() {
     worker_.join();
 }
 
-// The copy's rate, over the last 10 s, and what to do when it falls. The fourth
-// try (O_DIRECT both ways) still fell from about 200 MB/s to 10, and closing the
-// app and starting it again brought the 200 back every time. So on the PS5,
-// once the rate has stayed under a third of its best for 8 s with more than
-// 512 MB to go, the copy stops between pieces and the app starts itself again;
-// the files already whole are kept (FindImages, ExtractDisc). At most 20 times
-// for one install, counted in <game>/.install-restarts.
-constexpr const char *kRestartsName = ".install-restarts";
-constexpr int kMaxRestarts = 20;
-
-void ImageInstallDialog::WatchRate(uint64_t done, uint64_t total) {
-  const double now = Now();
-  if (samples_.empty() || now - samples_.back().first >= 1.0)
-    samples_.emplace_back(now, done);
-  while (samples_.size() > 2 && now - samples_.front().first > 10.0)
-    samples_.pop_front();
-  const auto &[then, done_then] = samples_.front();
-  rate_ = now - then >= 2.0 ? double(done - std::min(done, done_then)) / (now - then) : 0.0;
-  if (now - then >= 5.0)
-    peak_rate_ = std::max(peak_rate_, rate_);
-#if defined(__PROSPERO__)
-  const bool slow = peak_rate_ >= 60.0 * (1 << 20) && rate_ < peak_rate_ / 3.0 && total - done > (512ull << 20);
-  if (!slow || restarting_) {
-    slow_since_ = 0;
-    return;
-  }
-  if (slow_since_ == 0)
-    slow_since_ = now;
-  if (now - slow_since_ < 8.0)
-    return;
-  std::error_code ec;
-  const fs::path count_path = game_ / kRestartsName;
-  int count = 0;
-  if (std::FILE *f = std::fopen(count_path.c_str(), "r")) {
-    if (std::fscanf(f, "%d", &count) != 1)
-      count = 0;
-    std::fclose(f);
-  }
-  if (count >= kMaxRestarts) {
-    slow_since_ = now + 1e9;  // not again in this run
-    return;
-  }
-  if (std::FILE *f = std::fopen(count_path.c_str(), "w")) {
-    std::fprintf(f, "%d\n", count + 1);
-    std::fclose(f);
-  }
-  EOT_INFO("[install] the copy slowed from {:.0f} to {:.0f} MB/s; starting the app again to carry on (restart {})",
-           peak_rate_ / double(1 << 20), rate_ / double(1 << 20), count + 1);
-  restarting_ = true;
-  progress_.stop.store(true);
-#else
-  (void)total;
-#endif
-}
-
-void ImageInstallDialog::Restart() {
-#if defined(__PROSPERO__)
-  if (worker_.joinable())
-    worker_.join();
-  rex::FlushLogging();
-  const int result = sceSystemServiceLoadExec("/app0/eboot.bin", nullptr);
-  EOT_WARN("[install] the system would not start the app again ({:#x})", unsigned(result));
-  restart_note_ = "Close the game with the PS button and start it again: it carries on from here at full speed.";
-#endif
-}
-
 void ImageInstallDialog::OnDraw(ImGuiIO &io) {
   if (!background_ && !background_tried_ && immediate_drawer_) {
     background_tried_ = true;
@@ -619,11 +513,7 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
   }
 
   const bool failed = !plan_.problem.empty() || progress_.failed.load();
-  const bool complete = plan_.problem.empty() && progress_.complete.load() && !failed && !restarting_;
-  if (restarting_ && progress_.complete.load() && !restart_asked_) {
-    restart_asked_ = true;
-    Restart();
-  }
+  const bool complete = plan_.problem.empty() && progress_.complete.load() && !failed;
   if (complete && !finished_) {
     done_seconds_ += io.DeltaTime;
     // A moment at 100% before the game starts
@@ -631,8 +521,6 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
       finished_ = true;
       if (worker_.joinable())
         worker_.join();
-      std::error_code ec;
-      fs::remove(game_ / kRestartsName, ec);
       app_context_.CallInUIThreadDeferred(on_done_);
     }
   }
@@ -677,21 +565,22 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.85f, 0.15f, 0.15f, 1.0f));
         ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 34.0f * scale), label.c_str());
         ImGui::PopStyleColor();
-        WatchRate(done, total);
-        const double rate = rate_;
+        const double now = Now();
+        if (samples_.empty() || now - samples_.back().first >= 1.0)
+          samples_.emplace_back(now, done);
+        while (samples_.size() > 2 && now - samples_.front().first > 10.0)
+          samples_.pop_front();
+        const auto &[then, done_then] = samples_.front();
+        const double rate = now - then >= 2.0 ? double(done - std::min(done, done_then)) / (now - then) : 0.0;
         std::string line = std::format("{} of {}", Size(done), Size(total));
-        if (rate > 0 && !complete && !restarting_) {
+        if (rate > 0 && !complete) {
           const double left = double(total - done) / rate;
           line += std::format("   |   {:.0f} MB/s   |   about {}", rate / double(1 << 20),
                               left >= 90 ? std::format("{:.0f} min left", left / 60.0)
                                          : std::format("{:.0f} s left", std::max(left, 1.0)));
         }
         ImGui::TextUnformatted(line.c_str());
-        const std::string current = complete       ? std::string("Starting the game...")
-                                    : restarting_ ? (restart_note_.empty()
-                                                         ? std::string("Restarting to keep the speed up...")
-                                                         : restart_note_)
-                                                  : progress_.Current();
+        const std::string current = complete ? std::string("Starting the game...") : progress_.Current();
         ImGui::PushStyleColor(ImGuiCol_Text, ui::Theme::White(0.6f));
         ImGui::TextUnformatted(current.c_str());
         if (!complete)

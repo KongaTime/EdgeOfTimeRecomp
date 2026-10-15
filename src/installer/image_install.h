@@ -56,7 +56,6 @@ struct ImageProgress {
   std::atomic<uint64_t> bytes_kept{0};  // already there from an earlier try
   std::atomic<bool> complete{false};
   std::atomic<bool> failed{false};
-  std::atomic<bool> stop{false};  // asked to stop between pieces, to start again
 
   void SetCurrent(const std::string &file);
   std::string Current();
@@ -100,13 +99,7 @@ private:
   // is the recent one, since the console's write cache makes the first GB or two
   // far faster than the rest (the third try: 240 MB/s, then 15)
   std::deque<std::pair<double, uint64_t>> samples_;
-  double rate_ = 0, peak_rate_ = 0, slow_since_ = 0;
-  bool restarting_ = false, restart_asked_ = false;
-  std::string restart_note_;
   float done_seconds_ = 0;
-
-  void WatchRate(uint64_t done, uint64_t total);
-  void Restart();
 };
 
 }  // namespace eot::installer
