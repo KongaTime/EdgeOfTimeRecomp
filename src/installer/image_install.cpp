@@ -572,6 +572,14 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
           samples_.pop_front();
         const auto &[then, done_then] = samples_.front();
         const double rate = now - then >= 2.0 ? double(done - std::min(done, done_then)) / (now - then) : 0.0;
+        if (now - then >= 5.0) {
+          peak_rate_ = std::max(peak_rate_, rate);
+          // The console takes about 1.5 GB at 200 MB/s or more, then writes at about
+          // 25 MB/s until its cache has emptied; closing the app gives it the time
+          // to, and the next start copies fast again (2026-10-15, on the console)
+          if (peak_rate_ >= 60.0 * (1 << 20) && rate < peak_rate_ / 3.0 && total - done > (512ull << 20))
+            slowed_ = true;
+        }
         std::string line = std::format("{} of {}", Size(done), Size(total));
         if (rate > 0 && !complete) {
           const double left = double(total - done) / rate;
@@ -583,9 +591,17 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
         const std::string current = complete ? std::string("Starting the game...") : progress_.Current();
         ImGui::PushStyleColor(ImGuiCol_Text, ui::Theme::White(0.6f));
         ImGui::TextUnformatted(current.c_str());
-        if (!complete)
+        if (!complete && !slowed_)
           ImGui::TextWrapped("You can close the game and come back: the files already installed are kept.");
         ImGui::PopStyleColor();
+        if (!complete && slowed_) {
+          ImGui::Spacing();
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.35f, 1.0f));
+          ImGui::TextWrapped("The PS5 has slowed the install down. To speed it up again, close the game with the "
+                             "PS button and open it again: it picks up where it left off. A full install usually "
+                             "takes 2 or 3 restarts. Or just leave it running: it gets there either way.");
+          ImGui::PopStyleColor();
+        }
       }
     }
     ImGui::EndChild();

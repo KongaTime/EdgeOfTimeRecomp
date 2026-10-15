@@ -99,6 +99,10 @@ private:
   // is the recent one, since the console's write cache makes the first GB or two
   // far faster than the rest (the third try: 240 MB/s, then 15)
   std::deque<std::pair<double, uint64_t>> samples_;
+  // The best rate seen, and whether the copy has fallen well under it: the
+  // console's write cache is full, and the screen says how to get the speed back
+  double peak_rate_ = 0;
+  bool slowed_ = false;
   float done_seconds_ = 0;
 };
 
