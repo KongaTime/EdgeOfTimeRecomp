@@ -112,23 +112,61 @@ void ProcessItem(WorkItem &item) {
     item.screenToken->ReleasePending();
 }
 
-void WorkerLoop() {
+// The PS5 has no lower priority to put the workers at while the game plays
+// (SetWorkerPriority), and a fresh install queues thousands of predicted and
+// background pipelines: six workers building them at the game's own priority
+// made it stutter badly (2026-10-15, bg 9511 pending through play). There, out
+// of loading screens, only this many workers take those two lanes; every worker
+// still takes the recorded lane, what the level is known to draw.
+#if defined(__PROSPERO__)
+constexpr u32 kPlayWorkers = 2;
+#else
+constexpr u32 kPlayWorkers = kPsoMaxThreads;
+#endif
+
+void WorkerLoop(u32 index) {
   auto &p = pool();
   bool priority_loading = false;
   SetWorkerPriority(priority_loading);
+  // Lanes this worker may take now: every lane on a loading screen; in play, the
+  // recorded lane, and the predicted one for the first kPlayWorkers. On the PS5 the
+  // background lane waits for a loading screen: two workers building its thousands
+  // of speculative pipelines through play still cost the game 40-80 ms frames every
+  // second or so (2026-10-15, background 9500 -> 3900 pending, pso 0 ms on the
+  // render thread)
+  const auto lanes_open = [&] {
+    if (p.loading.load(std::memory_order_relaxed))
+      return 3;
+#if defined(__PROSPERO__)
+    return index < kPlayWorkers ? 2 : 1;
+#else
+    return index < kPlayWorkers ? 3 : 1;
+#endif
+  };
   for (;;) {
     WorkItem item;
     {
       std::unique_lock lock(p.mutex);
-      p.cv.wait(lock, [&] {
-        return p.stop || !p.lanes[0].empty() || !p.lanes[1].empty() || !p.lanes[2].empty();
-      });
+      const auto ready = [&] {
+        const int open = lanes_open();
+        for (int lane = 0; lane < open; ++lane)
+          if (!p.lanes[lane].empty())
+            return true;
+        return false;
+      };
+      // A worker held back from the lanes it may not take now looks again when a
+      // loading screen comes up (PsoPrecacheSetLoading) or every 100 ms
+      while (!p.stop && !ready())
+        p.cv.wait_for(lock, std::chrono::milliseconds(100));
       if (p.stop && p.lanes[0].empty() && p.lanes[1].empty() && p.lanes[2].empty())
         return;
-      for (auto &lane : p.lanes) {
-        if (!lane.empty()) {
-          item = std::move(lane.front());
-          lane.pop_front();
+      if (!ready())
+        continue;
+      const int open = lanes_open();
+      for (int lane = 0; lane < open; ++lane) {
+        if (!p.lanes[lane].empty()) {
+          item = std::move(p.lanes[lane].front());
+          p.lanes[lane].pop_front();
           break;
         }
       }
@@ -168,7 +206,7 @@ void PsoPrecacheStart() {
   const u32 physical = PhysicalCoreCount();
   const u32 count = std::clamp(physical > 2 ? physical - 2 : 1u, kPsoMinThreads, kPsoMaxThreads);
   for (u32 i = 0; i < count; ++i)
-    p.threads.emplace_back(WorkerLoop);
+    p.threads.emplace_back(WorkerLoop, i);
   EOT_INFO("[pso] {} pipeline worker thread(s) for {} physical cores", count, physical);
 }
 
@@ -202,6 +240,8 @@ void PsoPrecacheStop() {
 void PsoPrecacheSetLoading(bool loading) {
   auto &p = pool();
   p.loading.store(loading, std::memory_order_relaxed);
+  if (loading)
+    p.cv.notify_all();
   std::lock_guard lock(p.screenMutex);
   if (loading)
     p.screenToken = std::make_shared<CompileToken>();

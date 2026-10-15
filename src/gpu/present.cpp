@@ -27,6 +27,7 @@
 #include "gpu/memory_report.h"
 #include "gpu/backend.h"
 #include "gpu/render_thread.h"
+#include "gpu/pipeline/pso_precache.h"
 #include "core/profiling.h"
 #include "gpu/device.h"
 #include "gpu/draw.h"
@@ -506,6 +507,20 @@ void LogPerfLocked(VideoState &s) {
                 p.index_cache_misses - q.index_cache_misses,
                 p.pipeline_bind_calls - q.pipeline_bind_calls, p.dead_resolves - q.dead_resolves,
                 wall - (p.capture_ms - q.capture_ms) - (p.present_wait_ms - q.present_wait_ms));
+#if defined(__PROSPERO__)
+      // The console's logs are what players send: a slow frame, and how much of it
+      // went to building pipelines on this thread, at info (the first 400)
+      static u32 told = 0;
+      if (told++ < 400) {
+        const PsoPrecacheStats pool = PsoPrecacheGetStats();
+        EOT_INFO("[hitch] frame {} took {:.0f} ms: pso {:.0f} ms ({} built here), draw {:.0f}, upload {:.0f} ({} tex), "
+                 "resolve {:.0f}, guest+other {:.0f} | pipelines pending: recorded {} predicted {} background {}",
+                 s.guest_frames, wall, p.pso_ms - q.pso_ms, p.psos - q.psos, p.draw_ms - q.draw_ms,
+                 p.upload_ms - q.upload_ms, p.uploads - q.uploads, p.resolve_ms - q.resolve_ms,
+                 wall - (p.capture_ms - q.capture_ms) - (p.present_wait_ms - q.present_wait_ms), pool.recordedPending,
+                 pool.priorityPending, pool.backgroundPending);
+      }
+#endif
       EOT_DEBUG("[hitch] frame {} took {:.1f} ms: draw {:.2f} ({} draws) upload {:.2f} ({} tex) "
                 "resolve {:.2f} ({}) link {:.2f} ({}) pso {:.2f} ({}) guest d3d {:.2f} ({} calls) "
                 "| acquire {:.2f} submit {:.2f} fence {:.2f} pace {:.2f} | new host objects: "
@@ -640,6 +655,15 @@ void LogPerfLocked(VideoState &s) {
   }
 #endif
   const f64 n = static_cast<f64>(p.frames);
+#if defined(__PROSPERO__)
+  {
+    const PsoPrecacheStats pool = PsoPrecacheGetStats();
+    EOT_INFO("[perf] {} frames, {:.1f} ms/frame (p95 {:.1f} max {:.1f}) | pso {:.0f} ms ({} built on the render thread) "
+             "| pipelines built {} pending: recorded {} predicted {} background {}",
+             p.frames, p.frame_ms / n, wall_p95, wall_max, p.pso_ms, p.psos, pool.built, pool.recordedPending,
+             pool.priorityPending, pool.backgroundPending);
+  }
+#endif
   EOT_DEBUG("[perf] {} frames, {:.2f} ms/frame wall (p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f}) | cpu ms/frame: capture {:.2f} wait {:.2f} idle {:.2f} draw {:.2f} ({} draws, {} noop; "
             "setup {:.2f} tgt {:.2f} psolk {:.2f} ({} memo, {} hot) streams {:.2f} [vtxcopy {:.2f}] const {:.2f} [float {:.2f} bind {:.2f}, {} file hits, {} mask-fast, {} mask-miss] rec {:.2f} [state {:.2f} vbind {:.2f}]; idx {:.2f} outside) resolve {:.2f} ({}; {} copies, {} handed, {} noop, {} dead, {} refresh, {} twin, {:.1f} alias deferred, {:.2f} alias copied; mirror {:.2f} fb {:.2f} bind {:.2f} alias {:.2f} msaa {:.2f}) upload {:.2f} ({}) link "
             "{:.2f} ({}) pso {:.2f} ({}) | guest d3d {:.2f} ({} calls) winmiss {} (@{:#x}) | idxcache hit {} miss {} evict {} vtxcache hit {} miss {} vram {}/{} "

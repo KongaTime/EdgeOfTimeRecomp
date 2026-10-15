@@ -65,6 +65,7 @@
 #include "ui/watermark.h"
 #include "platform/update_check.h"
 #include "installer/install_registry.h"
+#include "installer/port_packages.h"
 #include "mods/mod_manager.h"
 #include "gpu/shaders/guest_shaders.h"
 #if defined(__PROSPERO__)
@@ -553,24 +554,57 @@ rex::PathConfig ReeotApp::PathsForInstall(const rex::PathConfig &defaults,
   return paths;
 }
 
+rex::PathConfig ReeotApp::PathsForGameFolder(const rex::PathConfig &defaults, const fs::path &game) {
+  EOT_INFO("[install] game folder {}", game.string());
+  eot::installer::WritePortFiles(game);
+  LoadTranslation(game);
+  eot::installer::PublishDlc(install_root_ / eot::installer::kDlcFolderName, game, profile_root_);
+  eot::mods::Initialize(install_root_, game, profile_root_);
+  rex::PathConfig paths = defaults;
+  paths.game_data_root = game;
+  return paths;
+}
+
 std::optional<rex::PathConfig>
 ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(rex::PathConfig)> resume) {
-  if (auto named = NamedGameFolder()) {
-    EOT_INFO("[install] game folder {}", named->string());
-    eot::installer::WritePortFiles(*named);
-    LoadTranslation(*named);
-    eot::installer::PublishDlc(install_root_ / eot::installer::kDlcFolderName, *named, profile_root_);
-    eot::mods::Initialize(install_root_, *named, profile_root_);
-    rex::PathConfig paths = defaults;
-    paths.game_data_root = *named;
-    return paths;
+#if defined(__PROSPERO__)
+  // A disc image and title update copied into the title as they come: extracted
+  // into the game folder first, behind a progress screen (installer/image_install.h)
+  if (REXCVAR_GET(game_data_root).empty()) {
+    const fs::path game = "/app0/gamedata";
+    // The title's folder and the same by its real path, which are there with or
+    // without a game folder (the first try's game folder had been deleted)
+    for (const char *trigger : {"/app0/write-test", "/app0/write-test.txt"})
+      eot::installer::RunWriteTest(trigger, {"/app0", "/data/homebrew/PPSA99300", "/data"});
+    eot::installer::ImagePlan plan = eot::installer::FindImages(game, {game, "/app0"});
+    if (plan.needed) {
+      if (!BeginPreGuestUI())
+        return std::nullopt;
+      image_install_ = std::make_unique<eot::installer::ImageInstallDialog>(
+          imgui_drawer(), immediate_drawer(), app_context(), std::move(plan), game, [this, defaults, resume] {
+            StopPreGuestPump();
+            image_install_.reset();
+            if (auto named = NamedGameFolder()) {
+              resume(PathsForGameFolder(defaults, *named));
+              return;
+            }
+            eot::platform::ShowFatalError("reeot - game files missing",
+                                          "The install finished without Default.xex in /app0/gamedata.");
+            app_context().QuitFromUIThread();
+          });
+      return std::nullopt;
+    }
   }
+#endif
+  if (auto named = NamedGameFolder())
+    return PathsForGameFolder(defaults, *named);
 #if defined(__PROSPERO__)
   // No installer on the console: the game folder comes from a PC install
   (void)resume;
   eot::platform::ShowFatalError("reeot - game files missing",
-                                "No Default.xex in /app0/gamedata. Install the game with reeot on a PC, then "
-                                "copy its game folder into the title's gamedata folder.");
+                                "No Default.xex in /app0/gamedata. Copy your disc image (.iso) and the Title "
+                                "Update package into the gamedata folder, or the disc's files with the update's "
+                                "Default.xexp and Data/GameLogic.dllp.");
   app_context().QuitFromUIThread();
   return std::nullopt;
 #endif
@@ -980,12 +1014,21 @@ void ReeotApp::OnPreLaunchModule() {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 #endif
+#if defined(__PROSPERO__)
+  // The port's packages, which the title can't ship: made from the player's own
+  // game files the first time this build runs (installer/port_packages.h)
+  if (auto game = NamedGameFolder())
+    eot::installer::AuthorPortPackages(*game, "/app0/port");
+#endif
   eot::gpu::GuestShadersInit();
   eot::gpu::PsoCachePrecache();
 }
 
 void ReeotApp::OnShutdown() {
   StopPreGuestPump();
+#if defined(__PROSPERO__)
+  image_install_.reset();
+#endif
 #ifdef REEOT_BUILD_INSTALLER
   installer_wizard_.reset();
 #endif

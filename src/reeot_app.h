@@ -29,6 +29,9 @@
 #include <rex/rex_app.h>
 
 #include "installer/installer.h"
+#if defined(__PROSPERO__)
+#include "installer/image_install.h"
+#endif
 
 class ReeotApp : public rex::ReXApp {
 public:
@@ -62,6 +65,7 @@ private:
   void UseInstallRoot(const std::filesystem::path &root, rex::PathConfig &paths);
   void LoadTranslation(const std::filesystem::path &game);
   rex::PathConfig PathsForInstall(const rex::PathConfig &defaults, const eot::installer::InstallConfig &cfg);
+  rex::PathConfig PathsForGameFolder(const rex::PathConfig &defaults, const std::filesystem::path &game);
 
   void InstallOverlayHook();
   bool BeginPreGuestUI();
@@ -74,6 +78,10 @@ private:
                        const eot::installer::InstallConfig &cfg, const eot::installer::WizardChoices &choices);
 
   std::unique_ptr<eot::installer::InstallerWizard> installer_wizard_;
+#endif
+
+#if defined(__PROSPERO__)
+  std::unique_ptr<eot::installer::ImageInstallDialog> image_install_;
 #endif
 
   std::string active_profile_ = "default";
