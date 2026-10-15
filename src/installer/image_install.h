@@ -47,7 +47,7 @@ struct ImagePlan {
 };
 
 // A measurement of how the console writes, for the disc install's slowdown: with
-// a file named write-test beside eboot.bin, the title writes test files into
+// a file named write-test (or write-test.txt) beside eboot.bin, the title writes test files into
 // each of <dirs> it can reach and logs how fast the writes go, how long the
 // system takes to put them on the drive (fsync), and the drive's own rate (an
 // fsync every 128 MB); then it deletes the test files and the trigger, and the

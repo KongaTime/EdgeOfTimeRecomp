@@ -572,7 +572,10 @@ ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(re
   // into the game folder first, behind a progress screen (installer/image_install.h)
   if (REXCVAR_GET(game_data_root).empty()) {
     const fs::path game = "/app0/gamedata";
-    eot::installer::RunWriteTest("/app0/write-test", {game, "/data/homebrew/PPSA99300/gamedata", "/data"});
+    // The title's folder and the same by its real path, which are there with or
+    // without a game folder (the first try's game folder had been deleted)
+    for (const char *trigger : {"/app0/write-test", "/app0/write-test.txt"})
+      eot::installer::RunWriteTest(trigger, {"/app0", "/data/homebrew/PPSA99300", "/data"});
     eot::installer::ImagePlan plan = eot::installer::FindImages(game, {game, "/app0"});
     if (plan.needed) {
       if (!BeginPreGuestUI())
