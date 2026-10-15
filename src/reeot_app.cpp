@@ -64,6 +64,7 @@
 #include "goliath/ui/overlays/fps.h"
 #include "ui/watermark.h"
 #include "platform/update_check.h"
+#include "installer/image_install.h"
 #include "installer/install_registry.h"
 #include "installer/port_packages.h"
 #include "mods/mod_manager.h"
@@ -556,6 +557,12 @@ rex::PathConfig ReeotApp::PathsForInstall(const rex::PathConfig &defaults,
 
 std::optional<rex::PathConfig>
 ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(rex::PathConfig)> resume) {
+#if defined(__PROSPERO__)
+  // A disc image and title update copied into the title as they come: extracted
+  // into the game folder first (installer/image_install.h)
+  if (REXCVAR_GET(game_data_root).empty())
+    eot::installer::InstallFromImages("/app0/gamedata", {"/app0/gamedata", "/app0"});
+#endif
   if (auto named = NamedGameFolder()) {
     EOT_INFO("[install] game folder {}", named->string());
     eot::installer::WritePortFiles(*named);
@@ -570,8 +577,9 @@ ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(re
   // No installer on the console: the game folder comes from a PC install
   (void)resume;
   eot::platform::ShowFatalError("reeot - game files missing",
-                                "No Default.xex in /app0/gamedata. Put your game's files there: the disc's "
-                                "contents, with Default.xexp and Data/GameLogic.dllp from its Title Update.");
+                                "No Default.xex in /app0/gamedata. Copy your disc image (.iso) and the Title "
+                                "Update package into the gamedata folder, or the disc's files with the update's "
+                                "Default.xexp and Data/GameLogic.dllp.");
   app_context().QuitFromUIThread();
   return std::nullopt;
 #endif

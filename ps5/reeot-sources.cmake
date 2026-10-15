@@ -5,9 +5,8 @@
 # logic module's own sources. Keep it in step with CMakeLists.txt.
 #
 # Left out: src/platform/file_dialog.cpp (the installer's, which the PS5 has not),
-# src/installer/{disc_install,installer_music,installer_wizard}.cpp
-# (REEOT_BUILD_INSTALLER), src/platform/moltenvk.cpp (macOS), src/core/sleep.cpp
-# (Windows and macOS).
+# src/installer/{installer_music,installer_wizard}.cpp (REEOT_BUILD_INSTALLER),
+# src/platform/moltenvk.cpp (macOS), src/core/sleep.cpp (Windows and macOS).
 
 set(REEOT_PS5_SOURCES
     src/main.cpp
@@ -24,6 +23,8 @@ set(REEOT_PS5_SOURCES
     src/installer/install_registry.cpp
     src/installer/self_install.cpp
     src/installer/port_packages.cpp
+    src/installer/disc_install.cpp
+    src/installer/image_install.cpp
     src/installer/dlc_publish.cpp
     src/mods/mod_manager.cpp
     src/core/critical_section.cpp
