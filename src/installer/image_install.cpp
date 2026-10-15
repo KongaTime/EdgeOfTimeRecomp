@@ -38,6 +38,7 @@
 #include <unistd.h>
 
 #include <imgui.h>
+#include <rex/logging/api.h>
 #include <rex/ui/immediate_drawer.h>
 #include <rex/ui/windowed_app_context.h>
 
@@ -50,6 +51,10 @@
 #include "embedded.h"
 #include "installer/disc_install.h"
 #include "ui/theme.h"
+
+#if defined(__PROSPERO__)
+extern "C" int sceSystemServiceLoadExec(const char *path, const char *const *argv);
+#endif
 
 namespace eot::installer {
 
@@ -347,6 +352,10 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
     return true;
   };
   for (size_t done_files = 0; ok && done_files < todo.size();) {
+    if (progress.stop.load()) {
+      ok = false;  // not a failure: the app starts again and carries on
+      break;
+    }
     Piece piece = full.Pop();
     const DiscFile &file = plan.files[piece.file];
     if (piece.failed) {
@@ -505,9 +514,9 @@ std::thread RunImageInstall(const ImagePlan &plan, const fs::path &game, ImagePr
     fs::create_directories(game, ec);
     if (!plan.iso.empty())
       ExtractDisc(plan, game, progress);
-    if (!progress.failed.load() && !plan.update.empty())
+    if (!progress.failed.load() && !progress.stop.load() && !plan.update.empty())
       ExtractUpdate(plan, game, progress);
-    if (!progress.failed.load())
+    if (!progress.failed.load() && !progress.stop.load())
       EOT_INFO("[install] installed from {} and {} in {:.0f} s", plan.iso.string(), plan.update.string(),
                Now() - started);
     progress.complete.store(true);
@@ -531,6 +540,72 @@ ImageInstallDialog::~ImageInstallDialog() {
     worker_.join();
 }
 
+// The copy's rate, over the last 10 s, and what to do when it falls. The fourth
+// try (O_DIRECT both ways) still fell from about 200 MB/s to 10, and closing the
+// app and starting it again brought the 200 back every time. So on the PS5,
+// once the rate has stayed under a third of its best for 8 s with more than
+// 512 MB to go, the copy stops between pieces and the app starts itself again;
+// the files already whole are kept (FindImages, ExtractDisc). At most 20 times
+// for one install, counted in <game>/.install-restarts.
+constexpr const char *kRestartsName = ".install-restarts";
+constexpr int kMaxRestarts = 20;
+
+void ImageInstallDialog::WatchRate(uint64_t done, uint64_t total) {
+  const double now = Now();
+  if (samples_.empty() || now - samples_.back().first >= 1.0)
+    samples_.emplace_back(now, done);
+  while (samples_.size() > 2 && now - samples_.front().first > 10.0)
+    samples_.pop_front();
+  const auto &[then, done_then] = samples_.front();
+  rate_ = now - then >= 2.0 ? double(done - std::min(done, done_then)) / (now - then) : 0.0;
+  if (now - then >= 5.0)
+    peak_rate_ = std::max(peak_rate_, rate_);
+#if defined(__PROSPERO__)
+  const bool slow = peak_rate_ >= 60.0 * (1 << 20) && rate_ < peak_rate_ / 3.0 && total - done > (512ull << 20);
+  if (!slow || restarting_) {
+    slow_since_ = 0;
+    return;
+  }
+  if (slow_since_ == 0)
+    slow_since_ = now;
+  if (now - slow_since_ < 8.0)
+    return;
+  std::error_code ec;
+  const fs::path count_path = game_ / kRestartsName;
+  int count = 0;
+  if (std::FILE *f = std::fopen(count_path.c_str(), "r")) {
+    if (std::fscanf(f, "%d", &count) != 1)
+      count = 0;
+    std::fclose(f);
+  }
+  if (count >= kMaxRestarts) {
+    slow_since_ = now + 1e9;  // not again in this run
+    return;
+  }
+  if (std::FILE *f = std::fopen(count_path.c_str(), "w")) {
+    std::fprintf(f, "%d\n", count + 1);
+    std::fclose(f);
+  }
+  EOT_INFO("[install] the copy slowed from {:.0f} to {:.0f} MB/s; starting the app again to carry on (restart {})",
+           peak_rate_ / double(1 << 20), rate_ / double(1 << 20), count + 1);
+  restarting_ = true;
+  progress_.stop.store(true);
+#else
+  (void)total;
+#endif
+}
+
+void ImageInstallDialog::Restart() {
+#if defined(__PROSPERO__)
+  if (worker_.joinable())
+    worker_.join();
+  rex::FlushLogging();
+  const int result = sceSystemServiceLoadExec("/app0/eboot.bin", nullptr);
+  EOT_WARN("[install] the system would not start the app again ({:#x})", unsigned(result));
+  restart_note_ = "Close the game with the PS button and start it again: it carries on from here at full speed.";
+#endif
+}
+
 void ImageInstallDialog::OnDraw(ImGuiIO &io) {
   if (!background_ && !background_tried_ && immediate_drawer_) {
     background_tried_ = true;
@@ -544,7 +619,11 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
   }
 
   const bool failed = !plan_.problem.empty() || progress_.failed.load();
-  const bool complete = plan_.problem.empty() && progress_.complete.load() && !failed;
+  const bool complete = plan_.problem.empty() && progress_.complete.load() && !failed && !restarting_;
+  if (restarting_ && progress_.complete.load() && !restart_asked_) {
+    restart_asked_ = true;
+    Restart();
+  }
   if (complete && !finished_) {
     done_seconds_ += io.DeltaTime;
     // A moment at 100% before the game starts
@@ -552,6 +631,8 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
       finished_ = true;
       if (worker_.joinable())
         worker_.join();
+      std::error_code ec;
+      fs::remove(game_ / kRestartsName, ec);
       app_context_.CallInUIThreadDeferred(on_done_);
     }
   }
@@ -596,22 +677,21 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.85f, 0.15f, 0.15f, 1.0f));
         ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 34.0f * scale), label.c_str());
         ImGui::PopStyleColor();
-        const double now = Now();
-        if (samples_.empty() || now - samples_.back().first >= 1.0)
-          samples_.emplace_back(now, done);
-        while (samples_.size() > 2 && now - samples_.front().first > 10.0)
-          samples_.pop_front();
-        const auto &[then, done_then] = samples_.front();
-        const double rate = now - then >= 2.0 ? double(done - std::min(done, done_then)) / (now - then) : 0.0;
+        WatchRate(done, total);
+        const double rate = rate_;
         std::string line = std::format("{} of {}", Size(done), Size(total));
-        if (rate > 0 && !complete) {
+        if (rate > 0 && !complete && !restarting_) {
           const double left = double(total - done) / rate;
           line += std::format("   |   {:.0f} MB/s   |   about {}", rate / double(1 << 20),
                               left >= 90 ? std::format("{:.0f} min left", left / 60.0)
                                          : std::format("{:.0f} s left", std::max(left, 1.0)));
         }
         ImGui::TextUnformatted(line.c_str());
-        const std::string current = complete ? std::string("Starting the game...") : progress_.Current();
+        const std::string current = complete       ? std::string("Starting the game...")
+                                    : restarting_ ? (restart_note_.empty()
+                                                         ? std::string("Restarting to keep the speed up...")
+                                                         : restart_note_)
+                                                  : progress_.Current();
         ImGui::PushStyleColor(ImGuiCol_Text, ui::Theme::White(0.6f));
         ImGui::TextUnformatted(current.c_str());
         if (!complete)
