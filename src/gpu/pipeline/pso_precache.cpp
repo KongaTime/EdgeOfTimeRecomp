@@ -128,7 +128,21 @@ void WorkerLoop(u32 index) {
   auto &p = pool();
   bool priority_loading = false;
   SetWorkerPriority(priority_loading);
-  const auto lanes_open = [&] { return index < kPlayWorkers || p.loading.load(std::memory_order_relaxed) ? 3 : 1; };
+  // Lanes this worker may take now: every lane on a loading screen; in play, the
+  // recorded lane, and the predicted one for the first kPlayWorkers. On the PS5 the
+  // background lane waits for a loading screen: two workers building its thousands
+  // of speculative pipelines through play still cost the game 40-80 ms frames every
+  // second or so (2026-10-15, background 9500 -> 3900 pending, pso 0 ms on the
+  // render thread)
+  const auto lanes_open = [&] {
+    if (p.loading.load(std::memory_order_relaxed))
+      return 3;
+#if defined(__PROSPERO__)
+    return index < kPlayWorkers ? 2 : 1;
+#else
+    return index < kPlayWorkers ? 3 : 1;
+#endif
+  };
   for (;;) {
     WorkItem item;
     {
