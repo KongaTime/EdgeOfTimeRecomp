@@ -46,6 +46,14 @@ struct ImagePlan {
   std::vector<DiscFile> files;   // the disc's
 };
 
+// A measurement of how the console writes, for the disc install's slowdown: with
+// a file named write-test beside eboot.bin, the title writes test files into
+// each of <dirs> it can reach and logs how fast the writes go, how long the
+// system takes to put them on the drive (fsync), and the drive's own rate (an
+// fsync every 128 MB); then it deletes the test files and the trigger, and the
+// game starts as usual. Takes a few minutes.
+void RunWriteTest(const std::filesystem::path &trigger, const std::vector<std::filesystem::path> &dirs);
+
 // Looks in each of <look_in> (not below) for the game's disc image (.iso) and its
 // title update package, for what <game> lacks
 ImagePlan FindImages(const std::filesystem::path &game, const std::vector<std::filesystem::path> &look_in);

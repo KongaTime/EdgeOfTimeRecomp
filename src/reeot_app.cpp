@@ -572,6 +572,7 @@ ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(re
   // into the game folder first, behind a progress screen (installer/image_install.h)
   if (REXCVAR_GET(game_data_root).empty()) {
     const fs::path game = "/app0/gamedata";
+    eot::installer::RunWriteTest("/app0/write-test", {game, "/data/homebrew/PPSA99300/gamedata", "/data"});
     eot::installer::ImagePlan plan = eot::installer::FindImages(game, {game, "/app0"});
     if (plan.needed) {
       if (!BeginPreGuestUI())

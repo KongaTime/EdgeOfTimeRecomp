@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include <imgui.h>
+#include <rex/logging/api.h>
 #include <rex/ui/immediate_drawer.h>
 #include <rex/ui/windowed_app_context.h>
 
@@ -416,6 +417,77 @@ void ImageProgress::Fail(const std::string &error) {
 std::string ImageProgress::Error() {
   std::lock_guard lock(mutex_);
   return error_;
+}
+
+void RunWriteTest(const fs::path &trigger, const std::vector<fs::path> &dirs) {
+  std::error_code ec;
+  if (!fs::exists(trigger, ec))
+    return;
+  fs::remove(trigger, ec);
+  EOT_INFO("[write-test] start");
+  constexpr size_t kChunk = 8 << 20;
+  std::vector<uint8_t> data(kChunk);
+  for (size_t i = 0; i < data.size(); ++i)
+    data[i] = static_cast<uint8_t>(i * 2654435761u >> 24);
+  const auto mb_s = [](uint64_t bytes, double seconds) { return double(bytes) / double(1 << 20) / std::max(seconds, 1e-3); };
+  for (const fs::path &dir : dirs) {
+    if (!fs::is_directory(dir, ec)) {
+      EOT_INFO("[write-test] {}: not reachable from the title", dir.string());
+      continue;
+    }
+    const fs::path file = dir / ".write-test";
+    // A: 2 GB as the install writes it, then how long the system takes to put it on the drive
+    int fd = open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+      EOT_INFO("[write-test] {}: cannot create a file there (errno {})", dir.string(), errno);
+      continue;
+    }
+    double start = Now(), mark = start;
+    uint64_t written = 0, marked = 0;
+    bool ok = true;
+    while (ok && written < (2048ull << 20)) {
+      ok = WriteAll(fd, data.data(), data.size());
+      written += data.size();
+      if (written - marked >= (256ull << 20)) {
+        const double now = Now();
+        EOT_INFO("[write-test] {} A: {} MB written, {:.0f} MB/s over the last 256 MB", dir.string(), written >> 20,
+                 mb_s(written - marked, now - mark));
+        mark = now;
+        marked = written;
+      }
+    }
+    const double wrote = Now() - start;
+    double t = Now();
+    const bool synced = fsync(fd) == 0;
+    const double flush = Now() - t;
+    close(fd);
+    EOT_INFO("[write-test] {} A: {} MB in {:.1f} s ({:.0f} MB/s), then fsync {:.1f} s{}; overall {:.0f} MB/s onto the "
+             "drive",
+             dir.string(), written >> 20, wrote, mb_s(written, wrote), flush, synced ? "" : " (failed)",
+             mb_s(written, wrote + flush));
+    fs::remove(file, ec);
+    // B: 512 MB with an fsync every 128 MB: the drive's own rate on this path
+    fd = open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0)
+      continue;
+    for (int round = 0; round < 4 && ok; ++round) {
+      t = Now();
+      for (uint64_t n = 0; ok && n < (128ull << 20); n += data.size())
+        ok = WriteAll(fd, data.data(), data.size());
+      const double w = Now() - t;
+      t = Now();
+      fsync(fd);
+      const double f = Now() - t;
+      EOT_INFO("[write-test] {} B: 128 MB written in {:.2f} s, fsync {:.2f} s: {:.0f} MB/s onto the drive",
+               dir.string(), w, f, mb_s(128ull << 20, w + f));
+    }
+    close(fd);
+    fs::remove(file, ec);
+    if (!ok)
+      EOT_INFO("[write-test] {}: a write failed (errno {})", dir.string(), errno);
+  }
+  EOT_INFO("[write-test] done");
+  rex::FlushLogging();
 }
 
 ImagePlan FindImages(const fs::path &game, const std::vector<fs::path> &look_in) {
