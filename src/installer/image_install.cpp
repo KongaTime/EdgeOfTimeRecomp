@@ -13,12 +13,18 @@
 // The copy: one thread reads the image in 8 MB pieces while this one writes the
 // last piece out with write(2), each file as <name>.part, renamed once whole. The
 // second try wrote through std::ofstream, the read and write in turn, and ran at
-// 15 MB/s for the first GB, then near 1 MB/s.
+// 15 MB/s for the first GB, then near 1 MB/s. The third, through write(2), ran at
+// 240 MB/s for 1.5 GB and fell to 10-40, yet a fresh start of the app ran at 200
+// again: what the app had read and written was held in the file cache, and the
+// console slows an app whose cache is full. So both sides use O_DIRECT, from and
+// into page-aligned buffers, which leaves nothing in the cache; where the system
+// refuses a direct transfer (EINVAL), that file goes back to cached I/O.
 
 #include "installer/image_install.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cfloat>
 #include <chrono>
 #include <condition_variable>
@@ -55,6 +61,17 @@ constexpr uint64_t kSector = 0x800;
 constexpr size_t kPiece = 8 << 20;
 constexpr size_t kPieces = 4;
 
+// Clears O_DIRECT on <fd> after the system refused a direct transfer
+bool DropDirect(int fd) {
+  const int flags = fcntl(fd, F_GETFL);
+  if (flags < 0 || !(flags & O_DIRECT))
+    return false;
+  static std::atomic<bool> told{false};
+  if (!told.exchange(true))
+    EOT_WARN("[install] the system refused a direct transfer; such files go through the cache");
+  return fcntl(fd, F_SETFL, flags & ~O_DIRECT) == 0;
+}
+
 bool HasExtension(const fs::path &path, std::string_view extension) {
   std::string ext = path.extension().string();
   for (char &c : ext)
@@ -74,7 +91,12 @@ double Now() {
 
 class Disc {
 public:
-  explicit Disc(const fs::path &path) : fd_(open(path.c_str(), O_RDONLY)) {}
+  // <direct>: past the file cache (the extraction; the listing's small reads are cached)
+  explicit Disc(const fs::path &path, bool direct = false)
+      : fd_(direct ? open(path.c_str(), O_RDONLY | O_DIRECT) : -1) {
+    if (fd_ < 0)
+      fd_ = open(path.c_str(), O_RDONLY);
+  }
   ~Disc() {
     if (fd_ >= 0)
       close(fd_);
@@ -86,6 +108,8 @@ public:
     auto *p = static_cast<uint8_t *>(out);
     while (length) {
       const ssize_t n = pread(fd_, p, length, static_cast<off_t>(offset));
+      if (n < 0 && errno == EINVAL && DropDirect(fd_))
+        continue;
       if (n <= 0)
         return false;
       p += n;
@@ -204,7 +228,7 @@ struct Piece {
   size_t file = 0;
   uint64_t at = 0;
   size_t length = 0;
-  std::vector<uint8_t> *buffer = nullptr;
+  uint8_t *buffer = nullptr;
   bool failed = false;
 };
 
@@ -234,6 +258,8 @@ private:
 bool WriteAll(int fd, const uint8_t *p, size_t length) {
   while (length) {
     const ssize_t n = write(fd, p, length);
+    if (n < 0 && errno == EINVAL && DropDirect(fd))
+      continue;
     if (n <= 0)
       return false;
     p += n;
@@ -243,7 +269,7 @@ bool WriteAll(int fd, const uint8_t *p, size_t length) {
 }
 
 void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &progress) {
-  Disc disc(plan.iso);
+  Disc disc(plan.iso, true);
   std::string error;
   if (!disc.Open(error)) {
     progress.Fail(plan.iso.filename().string() + ": " + error);
@@ -266,10 +292,13 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
   progress.bytes_done.store(kept);
   EOT_INFO("[install] {} of {} files to extract; {} MB already there", todo.size(), plan.files.size(), kept >> 20);
 
-  std::vector<std::vector<uint8_t>> buffers(kPieces, std::vector<uint8_t>(kPiece));
+  // Page-aligned, as direct transfers want them
+  constexpr size_t kAlign = 0x4000;
+  std::vector<uint8_t> memory(kPiece * kPieces + kAlign);
+  uint8_t *aligned = memory.data() + (kAlign - reinterpret_cast<uintptr_t>(memory.data()) % kAlign) % kAlign;
   PieceQueue full, empty;
-  for (auto &buffer : buffers)
-    empty.Push({0, 0, 0, &buffer});
+  for (size_t i = 0; i < kPieces; ++i)
+    empty.Push({0, 0, 0, aligned + i * kPiece});
   std::atomic<bool> stop{false};
   std::atomic<uint64_t> read_us{0};
   std::thread reader([&] {
@@ -283,7 +312,7 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
         piece.at = at;
         piece.length = size_t(std::min<uint64_t>(kPiece, file.size - at));
         const double t = Now();
-        piece.failed = piece.length && !disc.Read(file.offset + at, piece.buffer->data(), piece.length);
+        piece.failed = piece.length && !disc.Read(file.offset + at, piece.buffer, piece.length);
         read_us.fetch_add(uint64_t((Now() - t) * 1e6));
         full.Push(piece);
         if (piece.failed)
@@ -336,7 +365,9 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
       fs::create_directories(dest.parent_path(), ec);
       fs::path part = dest;
       part += ".part";
-      fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+      fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0666);
+      if (fd < 0)
+        fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
       if (fd < 0) {
         progress.Fail("could not create " + part.string());
         ok = false;
@@ -344,7 +375,7 @@ void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &pro
       }
     }
     const double t = Now();
-    if (!WriteAll(fd, piece.buffer->data(), piece.length)) {
+    if (!WriteAll(fd, piece.buffer, piece.length)) {
       progress.Fail("could not write " + file.path + " (is the storage full?)");
       ok = false;
       break;
