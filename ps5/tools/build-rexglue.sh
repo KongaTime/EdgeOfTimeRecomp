@@ -117,7 +117,7 @@ done | sort -u >"$work/undefined"
     # service: a title's link takes every SDK module it needs), and its static
     # libraries
     for module in libkernel_web libSceLibcInternal libc_stub_weak libkernel_stub_weak libSceNet \
-            libSceAudioOut libScePad libSceUserService; do
+            libSceAudioOut libScePad libSceUserService libSceSystemService; do
         "$nm" -D --defined-only "$sdk/target/lib/$module.so" | awk '{ print $NF }'
     done
     # (not libc.a: a title takes its C library from the console's modules and
@@ -129,9 +129,11 @@ done | sort -u >"$work/undefined"
 } | sort -u >"$work/console"
 # __emutls_get_address is Clang's builtins', which a title's link recipe takes;
 # __real_abort is what a title's --wrap=abort gives the fault records'
-# __wrap_abort (the fork's src/core/abort_prospero.cpp)
+# __wrap_abort (the fork's src/core/abort_prospero.cpp); vk_icdGetInstanceProcAddr
+# and wsi_videoout_set_flip_rate are RADV's, which every title links (the fork's
+# GPU in the title, librexgpu-xenos, calls them)
 comm -23 "$work/undefined" "$work/defined" | comm -23 - "$work/console" |
-    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|__emutls_get_address|__real_abort|_ZN3rex2ui21GetWindowedAppCreatorEv' \
+    grep -vxE '_GLOBAL_OFFSET_TABLE_|__dso_handle|__emutls_get_address|__real_abort|_ZN3rex2ui21GetWindowedAppCreatorEv|vk_icdGetInstanceProcAddr|wsi_videoout_set_flip_rate' \
     >"$work/unprovided" || true
 # What the platform layer has as ps5_<name>: a title binds those (--defsym), in
 # PS5_Vulkan's recipe or its own list (PS5_EdgeOfTimeTitle's reeot/reeot.cmake);
