@@ -9,30 +9,41 @@
 // sector 32, and directories as binary trees of entries. The title update is an
 // STFS package, which the SDK reads with plain reads, so the desktop installer
 // extracts that.
+//
+// The copy: one thread reads the image in 8 MB pieces while this one writes the
+// last piece out with write(2), each file as <name>.part, renamed once whole. The
+// second try wrote through std::ofstream, the read and write in turn, and ran at
+// 15 MB/s for the first GB, then near 1 MB/s.
 
 #include "installer/image_install.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
+#include <cfloat>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <format>
-#include <fstream>
-#include <string>
 #include <string_view>
-#include <thread>
 
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/logging.h"
-#include "installer/disc_install.h"
+#include <imgui.h>
+#include <rex/ui/immediate_drawer.h>
+#include <rex/ui/windowed_app_context.h>
 
-#if defined(__PROSPERO__)
-extern "C" int sceKernelSendNotificationRequest(int, void *, size_t, int);
-#endif
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include <stb_image.h>
+
+#include "core/logging.h"
+#include "embedded.h"
+#include "installer/disc_install.h"
+#include "ui/theme.h"
 
 namespace eot::installer {
 
@@ -41,20 +52,8 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr uint64_t kSector = 0x800;
-
-// To the log and, on the PS5, to a notification: the install runs before the
-// game draws anything
-void Tell(const std::string &message) {
-  EOT_INFO("[install] {}", message);
-#if defined(__PROSPERO__)
-  struct {
-    char reserved[45];
-    char message[3075];
-  } request{};
-  std::snprintf(request.message, sizeof(request.message), "%s", message.c_str());
-  sceKernelSendNotificationRequest(0, &request, sizeof(request), 0);
-#endif
-}
+constexpr size_t kPiece = 8 << 20;
+constexpr size_t kPieces = 4;
 
 bool HasExtension(const fs::path &path, std::string_view extension) {
   std::string ext = path.extension().string();
@@ -69,11 +68,9 @@ bool SameName(std::string_view a, std::string_view b) {
          });
 }
 
-struct DiscFile {
-  std::string path;
-  uint64_t offset = 0;
-  uint64_t size = 0;
-};
+double Now() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 class Disc {
 public:
@@ -181,93 +178,255 @@ private:
 };
 
 // Lists the game's disc image, or says why it isn't one
-bool ReadDisc(const fs::path &iso, std::vector<DiscFile> &files) {
+bool ReadDisc(const fs::path &iso, std::vector<DiscFile> &files, std::string &problem) {
   EOT_INFO("[install] reading {}", iso.string());
   Disc disc(iso);
   std::string error;
   if (!disc.Open(error) || !disc.List(files, error)) {
-    EOT_WARN("[install] {}: {}", iso.string(), error);
+    problem = iso.filename().string() + ": " + error + ".";
+    EOT_WARN("[install] {}", problem);
     return false;
   }
   const auto has = [&](std::string_view name) {
     return std::any_of(files.begin(), files.end(), [&](const DiscFile &f) { return SameName(f.path, name); });
   };
   if (!has("Default.xex") || !has("Data/GameLogic.dll")) {
-    EOT_WARN("[install] {} is not Edge of Time's disc ({} files, no Default.xex and Data/GameLogic.dll)",
-             iso.string(), files.size());
+    problem = iso.filename().string() + " is not Spider-Man: Edge of Time's disc image.";
+    EOT_WARN("[install] {} ({} files)", problem, files.size());
     return false;
+  }
+  std::erase_if(files, [](const DiscFile &f) { return f.path.starts_with("$SystemUpdate/"); });
+  return true;
+}
+
+// A piece of the image on its way from the reading thread to the writer
+struct Piece {
+  size_t file = 0;
+  uint64_t at = 0;
+  size_t length = 0;
+  std::vector<uint8_t> *buffer = nullptr;
+  bool failed = false;
+};
+
+class PieceQueue {
+public:
+  void Push(Piece piece) {
+    {
+      std::lock_guard lock(mutex_);
+      pieces_.push_back(piece);
+    }
+    changed_.notify_all();
+  }
+  Piece Pop() {
+    std::unique_lock lock(mutex_);
+    changed_.wait(lock, [&] { return !pieces_.empty(); });
+    Piece piece = pieces_.front();
+    pieces_.pop_front();
+    return piece;
+  }
+
+private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  std::deque<Piece> pieces_;
+};
+
+bool WriteAll(int fd, const uint8_t *p, size_t length) {
+  while (length) {
+    const ssize_t n = write(fd, p, length);
+    if (n <= 0)
+      return false;
+    p += n;
+    length -= size_t(n);
   }
   return true;
 }
 
-bool ExtractDisc(const fs::path &iso, const std::vector<DiscFile> &files, const fs::path &game) {
-  Disc disc(iso);
+void ExtractDisc(const ImagePlan &plan, const fs::path &game, ImageProgress &progress) {
+  Disc disc(plan.iso);
   std::string error;
   if (!disc.Open(error)) {
-    Tell("Edge of Time: the install failed: " + iso.filename().string() + ": " + error);
-    return false;
+    progress.Fail(plan.iso.filename().string() + ": " + error);
+    return;
   }
-  uint64_t total = 0, done = 0;
-  for (const DiscFile &file : files)
-    total += file.size;
-  EOT_INFO("[install] {} files, {} MB from {}", files.size(), total >> 20, iso.string());
-  std::vector<uint8_t> buffer(8 << 20);
-  uint64_t shown = 0;
+
+  // What an earlier try extracted whole stays
+  std::vector<size_t> todo;
+  uint64_t kept = 0;
   std::error_code ec;
-  for (const DiscFile &file : files) {
-    if (file.path.starts_with("$SystemUpdate/"))
-      continue;
+  for (size_t i = 0; i < plan.files.size(); ++i) {
+    const DiscFile &file = plan.files[i];
     const fs::path dest = game / fs::path(file.path);
-    fs::create_directories(dest.parent_path(), ec);
-    std::ofstream out(dest, std::ios::binary | std::ios::trunc);
-    for (uint64_t at = 0; at < file.size && out;) {
-      const size_t n = size_t(std::min<uint64_t>(buffer.size(), file.size - at));
-      if (!disc.Read(file.offset + at, buffer.data(), n)) {
-        Tell("Edge of Time: the install failed: could not read " + file.path + " from the disc image");
-        return false;
-      }
-      out.write(reinterpret_cast<const char *>(buffer.data()), static_cast<std::streamsize>(n));
-      at += n;
-      done += n;
-      const uint64_t percent = total ? done * 100 / total : 100;
-      if (percent >= shown + 20 && percent < 100) {
-        shown = percent / 20 * 20;
-        Tell(std::format("Edge of Time: installing, {}%", shown));
+    if (fs::is_regular_file(dest, ec) && fs::file_size(dest, ec) == file.size)
+      kept += file.size;
+    else
+      todo.push_back(i);
+  }
+  progress.bytes_kept.store(kept);
+  progress.bytes_done.store(kept);
+  EOT_INFO("[install] {} of {} files to extract; {} MB already there", todo.size(), plan.files.size(), kept >> 20);
+
+  std::vector<std::vector<uint8_t>> buffers(kPieces, std::vector<uint8_t>(kPiece));
+  PieceQueue full, empty;
+  for (auto &buffer : buffers)
+    empty.Push({0, 0, 0, &buffer});
+  std::atomic<bool> stop{false};
+  std::atomic<uint64_t> read_us{0};
+  std::thread reader([&] {
+    for (const size_t index : todo) {
+      const DiscFile &file = plan.files[index];
+      for (uint64_t at = 0; at < file.size || (at == 0 && file.size == 0);) {
+        Piece piece = empty.Pop();
+        if (stop.load())
+          return;
+        piece.file = index;
+        piece.at = at;
+        piece.length = size_t(std::min<uint64_t>(kPiece, file.size - at));
+        const double t = Now();
+        piece.failed = piece.length && !disc.Read(file.offset + at, piece.buffer->data(), piece.length);
+        read_us.fetch_add(uint64_t((Now() - t) * 1e6));
+        full.Push(piece);
+        if (piece.failed)
+          return;
+        at += piece.length;
+        if (file.size == 0)
+          break;
       }
     }
-    if (!out) {
-      Tell("Edge of Time: the install failed: could not write " + dest.string());
+  });
+
+  double write_seconds = 0;
+  const double started = Now();
+  uint64_t logged = 0;
+  int fd = -1;
+  size_t open_file = SIZE_MAX;
+  bool ok = true;
+  const auto finish_file = [&]() {
+    if (fd < 0)
+      return true;
+    const bool closed = close(fd) == 0;
+    fd = -1;
+    const fs::path dest = game / fs::path(plan.files[open_file].path);
+    fs::path part = dest;
+    part += ".part";
+    std::error_code rename_ec;
+    fs::rename(part, dest, rename_ec);
+    if (!closed || rename_ec) {
+      progress.Fail("could not write " + dest.string());
       return false;
     }
+    return true;
+  };
+  for (size_t done_files = 0; ok && done_files < todo.size();) {
+    Piece piece = full.Pop();
+    const DiscFile &file = plan.files[piece.file];
+    if (piece.failed) {
+      progress.Fail("could not read " + file.path + " from the disc image");
+      ok = false;
+      break;
+    }
+    if (piece.file != open_file) {
+      if (!finish_file()) {
+        ok = false;
+        break;
+      }
+      open_file = piece.file;
+      progress.SetCurrent(file.path);
+      const fs::path dest = game / fs::path(file.path);
+      fs::create_directories(dest.parent_path(), ec);
+      fs::path part = dest;
+      part += ".part";
+      fd = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+      if (fd < 0) {
+        progress.Fail("could not create " + part.string());
+        ok = false;
+        break;
+      }
+    }
+    const double t = Now();
+    if (!WriteAll(fd, piece.buffer->data(), piece.length)) {
+      progress.Fail("could not write " + file.path + " (is the storage full?)");
+      ok = false;
+      break;
+    }
+    write_seconds += Now() - t;
+    const uint64_t done = progress.bytes_done.fetch_add(piece.length) + piece.length;
+    empty.Push(piece);
+    if (piece.at + piece.length >= file.size)
+      ++done_files;
+    if (done - logged >= (512ull << 20)) {
+      logged = done;
+      const double copied = double(done - kept) / double(1 << 20);
+      EOT_INFO("[install] {} of {} MB, {:.1f} MB/s (reading {:.1f} s, writing {:.1f} s)", done >> 20,
+               progress.bytes_total.load() >> 20, copied / std::max(Now() - started, 0.001), read_us.load() / 1e6,
+               write_seconds);
+    }
   }
-  return true;
+  if (ok)
+    ok = finish_file();
+  else if (fd >= 0)
+    close(fd);
+  stop.store(true);
+  empty.Push({});  // wakes a reader that is waiting for a buffer
+  reader.join();
+  if (ok)
+    EOT_INFO("[install] the disc's files are extracted: {:.0f} s (reading {:.1f} s, writing {:.1f} s)",
+             Now() - started, read_us.load() / 1e6, write_seconds);
 }
 
 // The title update's Default.xexp and Data/GameLogic.dllp, by the desktop installer
-bool ExtractUpdate(const fs::path &package, const fs::path &game) {
+void ExtractUpdate(const ImagePlan &plan, const fs::path &game, ImageProgress &progress) {
+  progress.SetCurrent(plan.update.filename().string());
   InstallSources sources;
-  sources.update = package;
-  InstallProgress progress;
-  std::thread worker = Installer::RunAsync(sources, game, false, progress);
+  sources.update = plan.update;
+  InstallProgress update;
+  std::thread worker = Installer::RunAsync(sources, game, false, update);
   worker.join();
-  if (progress.failed.load()) {
-    Tell("Edge of Time: the title update could not be installed: " + progress.GetError());
-    return false;
-  }
-  return true;
+  if (update.failed.load())
+    progress.Fail("the title update could not be installed: " + update.GetError());
+}
+
+std::string Size(uint64_t bytes) {
+  return bytes >= (1ull << 30) ? std::format("{:.2f} GB", double(bytes) / double(1ull << 30))
+                               : std::format("{:.0f} MB", double(bytes) / double(1 << 20));
 }
 
 }  // namespace
 
-bool InstallFromImages(const fs::path &game, const std::vector<fs::path> &look_in) {
+void ImageProgress::SetCurrent(const std::string &file) {
+  std::lock_guard lock(mutex_);
+  current_ = file;
+}
+
+std::string ImageProgress::Current() {
+  std::lock_guard lock(mutex_);
+  return current_;
+}
+
+void ImageProgress::Fail(const std::string &error) {
+  {
+    std::lock_guard lock(mutex_);
+    if (error_.empty())
+      error_ = error;
+  }
+  failed.store(true);
+  EOT_ERROR("[install] {}", error);
+}
+
+std::string ImageProgress::Error() {
+  std::lock_guard lock(mutex_);
+  return error_;
+}
+
+ImagePlan FindImages(const fs::path &game, const std::vector<fs::path> &look_in) {
+  ImagePlan plan;
   std::error_code ec;
   const bool have_disc = fs::is_regular_file(game / "Default.xex", ec);
   const bool have_update = fs::is_regular_file(game / "Default.xexp", ec);
   if (have_disc && have_update)
-    return true;
+    return plan;
 
-  fs::path iso, update;
-  std::vector<DiscFile> files;
+  std::string disc_problem;
   for (const fs::path &dir : look_in) {
     EOT_INFO("[install] looking in {} for the disc image and the title update", dir.string());
     for (const auto &it : fs::directory_iterator(dir, ec)) {
@@ -275,49 +434,162 @@ bool InstallFromImages(const fs::path &game, const std::vector<fs::path> &look_i
         continue;
       const fs::path &path = it.path();
       if (HasExtension(path, ".iso")) {
-        if (!have_disc && iso.empty() && ReadDisc(path, files))
-          iso = path;
+        if (!have_disc && plan.iso.empty() && ReadDisc(path, plan.files, disc_problem))
+          plan.iso = path;
         continue;
       }
-      if (have_update || !update.empty() || HasExtension(path, ".bin") || HasExtension(path, ".zst"))
+      if (have_update || !plan.update.empty() || HasExtension(path, ".bin") || HasExtension(path, ".zst") ||
+          HasExtension(path, ".part"))
         continue;
       if (const PackageInfo info = InspectPackage(path); info.ok) {
         if (const std::string why = CheckUpdatePackage(info); why.empty())
-          update = path;
+          plan.update = path;
         else
           EOT_INFO("[install] {}: {}", path.string(), why);
       }
     }
   }
-  if (iso.empty() && update.empty())
-    return true;
-  if (!have_disc && iso.empty()) {
-    Tell("Edge of Time: found the title update but not the disc image. Copy your .iso into the gamedata folder.");
-    return false;
-  }
+  if (plan.iso.empty() && plan.update.empty() && disc_problem.empty())
+    return plan;  // nothing to install from: the caller says what is missing
+  plan.needed = true;
+  if (!have_disc && plan.iso.empty())
+    plan.problem = !disc_problem.empty() ? disc_problem
+                                         : "The title update is here, but not the disc image. Copy your .iso "
+                                           "into the game's folder too.";
   // The recompiled code is the updated game's: it doesn't run without the update
-  if (!have_update && update.empty()) {
-    Tell("Edge of Time: found the disc image but not the title update. Copy the update package into the "
-         "gamedata folder too.");
-    return false;
+  else if (!have_update && plan.update.empty())
+    plan.problem = "The disc image is here, but not the title update. Copy the update package into the "
+                   "game's folder too.";
+  return plan;
+}
+
+std::thread RunImageInstall(const ImagePlan &plan, const fs::path &game, ImageProgress &progress) {
+  uint64_t total = 0;
+  for (const DiscFile &file : plan.files)
+    total += file.size;
+  progress.bytes_total.store(total);
+  return std::thread([plan, game, &progress] {
+    const double started = Now();
+    std::error_code ec;
+    fs::create_directories(game, ec);
+    if (!plan.iso.empty())
+      ExtractDisc(plan, game, progress);
+    if (!progress.failed.load() && !plan.update.empty())
+      ExtractUpdate(plan, game, progress);
+    if (!progress.failed.load())
+      EOT_INFO("[install] installed from {} and {} in {:.0f} s", plan.iso.string(), plan.update.string(),
+               Now() - started);
+    progress.complete.store(true);
+  });
+}
+
+ImageInstallDialog::ImageInstallDialog(rex::ui::ImGuiDrawer *drawer, rex::ui::ImmediateDrawer *immediate_drawer,
+                                       rex::ui::WindowedAppContext &app_context, ImagePlan plan, fs::path game,
+                                       std::function<void()> on_done)
+    : ImGuiDialog(drawer), immediate_drawer_(immediate_drawer), app_context_(app_context), plan_(std::move(plan)),
+      game_(std::move(game)), on_done_(std::move(on_done)) {
+  if (plan_.problem.empty()) {
+    started_ = Now();
+    worker_ = RunImageInstall(plan_, game_, progress_);
+  } else {
+    EOT_WARN("[install] {}", plan_.problem);
+  }
+}
+
+ImageInstallDialog::~ImageInstallDialog() {
+  if (worker_.joinable())
+    worker_.join();
+}
+
+void ImageInstallDialog::OnDraw(ImGuiIO &io) {
+  if (!background_ && !background_tried_ && immediate_drawer_) {
+    background_tried_ = true;
+    int w = 0, h = 0, channels = 0;
+    constexpr auto kImage = eot::Embedded("installer/installer.png");
+    if (uint8_t *rgba = stbi_load_from_memory(kImage.data, static_cast<int>(kImage.size), &w, &h, &channels, 4)) {
+      background_ = immediate_drawer_->CreateTexture(uint32_t(w), uint32_t(h),
+                                                     rex::ui::ImmediateTextureFilter::kLinear, false, rgba);
+      stbi_image_free(rgba);
+    }
   }
 
-  Tell("Edge of Time: installing from your " + std::string(!iso.empty() ? "disc image" : "title update") +
-       ". This takes a few minutes.");
-  const auto started = std::chrono::steady_clock::now();
-  if (!iso.empty() && !ExtractDisc(iso, files, game))
-    return false;
-  if (!update.empty() && !ExtractUpdate(update, game))
-    return false;
-  const auto seconds =
-      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count();
-  EOT_INFO("[install] installed from {} and {} in {} s", iso.string(), update.string(), seconds);
-  std::string leftovers;
-  for (const fs::path &source : {iso, update})
-    if (!source.empty())
-      leftovers += (leftovers.empty() ? "" : " and ") + source.filename().string();
-  Tell("Edge of Time is installed. You can delete " + leftovers + " to free up space.");
-  return true;
+  const bool failed = !plan_.problem.empty() || progress_.failed.load();
+  const bool complete = plan_.problem.empty() && progress_.complete.load() && !failed;
+  if (complete && !finished_) {
+    done_seconds_ += io.DeltaTime;
+    // A moment at 100% before the game starts
+    if (done_seconds_ > 1.0f) {
+      finished_ = true;
+      if (worker_.joinable())
+        worker_.join();
+      app_context_.CallInUIThreadDeferred(on_done_);
+    }
+  }
+
+  auto *vp = ImGui::GetMainViewport();
+  const float scale = std::max(1.0f, vp->Size.y / 720.0f);
+  ImGui::SetNextWindowPos(vp->Pos);
+  ImGui::SetNextWindowSize(vp->Size);
+  ImGui::SetNextWindowBgAlpha(1.0f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                                 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus;
+  if (ImGui::Begin("##image_install", nullptr, flags)) {
+    if (background_)
+      ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(background_.get()), vp->Pos,
+                                           ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y));
+    const float width = std::min(vp->Size.x - 64.0f * scale, 760.0f * scale);
+    ImGui::SetCursorPos(ImVec2((vp->Size.x - width) * 0.5f, vp->Size.y * 0.30f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Theme::kPanel);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24 * scale, 20 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10 * scale, 10 * scale));
+    if (ImGui::BeginChild("##image_install_panel", ImVec2(width, 0),
+                          ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
+                          ImGuiWindowFlags_NoSavedSettings)) {
+      ImGui::SetWindowFontScale(scale * 1.25f);
+      ImGui::TextUnformatted(failed ? "The game could not be installed"
+                                    : complete ? "Installed" : "Installing Spider-Man: Edge of Time");
+      ImGui::SetWindowFontScale(scale);
+      if (failed) {
+        const std::string why = !plan_.problem.empty() ? plan_.problem : progress_.Error();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.5f, 1.0f));
+        ImGui::TextWrapped("%s", why.c_str());
+        ImGui::PopStyleColor();
+        ImGui::TextWrapped("Close the game with the PS button, fix that, and start it again. Files already "
+                           "installed are kept.");
+      } else {
+        const uint64_t total = std::max<uint64_t>(progress_.bytes_total.load(), 1);
+        const uint64_t done = std::min(progress_.bytes_done.load(), total);
+        const float fraction = complete ? 1.0f : float(double(done) / double(total));
+        const std::string label = std::format("{}%", int(fraction * 100.0f));
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.85f, 0.15f, 0.15f, 1.0f));
+        ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 34.0f * scale), label.c_str());
+        ImGui::PopStyleColor();
+        const uint64_t kept = progress_.bytes_kept.load();
+        const double elapsed = Now() - started_;
+        const double rate = elapsed > 2.0 ? double(done - std::min(done, kept)) / elapsed : 0.0;
+        std::string line = std::format("{} of {}", Size(done), Size(total));
+        if (rate > 0 && !complete) {
+          const double left = double(total - done) / rate;
+          line += std::format("   |   {:.0f} MB/s   |   about {}", rate / double(1 << 20),
+                              left >= 90 ? std::format("{:.0f} min left", left / 60.0)
+                                         : std::format("{:.0f} s left", std::max(left, 1.0)));
+        }
+        ImGui::TextUnformatted(line.c_str());
+        const std::string current = complete ? std::string("Starting the game...") : progress_.Current();
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Theme::White(0.6f));
+        ImGui::TextUnformatted(current.c_str());
+        if (!complete)
+          ImGui::TextWrapped("You can close the game and come back: the files already installed are kept.");
+        ImGui::PopStyleColor();
+      }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
+  }
+  ImGui::End();
 }
 
 }  // namespace eot::installer
