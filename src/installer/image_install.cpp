@@ -495,8 +495,6 @@ ImagePlan FindImages(const fs::path &game, const std::vector<fs::path> &look_in)
   std::error_code ec;
   const bool have_disc = fs::is_regular_file(game / "Default.xex", ec);
   const bool have_update = fs::is_regular_file(game / "Default.xexp", ec);
-  if (have_disc && have_update)
-    return plan;
 
   std::string disc_problem;
   for (const fs::path &dir : look_in) {
@@ -505,8 +503,13 @@ ImagePlan FindImages(const fs::path &game, const std::vector<fs::path> &look_in)
       if (!it.is_regular_file(ec))
         continue;
       const fs::path &path = it.path();
+      // With a disc image here, it is read whatever the folder holds: Default.xex
+      // alone says nothing of the rest. Its files come out in order, Data/ first,
+      // so an install closed at about 70% had Default.xex, and the next start,
+      // judging by it, skipped the rest of the disc (2026-10-15: a Disc Read Error
+      // in play)
       if (HasExtension(path, ".iso")) {
-        if (!have_disc && plan.iso.empty() && ReadDisc(path, plan.files, disc_problem))
+        if (plan.iso.empty() && ReadDisc(path, plan.files, disc_problem))
           plan.iso = path;
         continue;
       }
@@ -521,8 +524,20 @@ ImagePlan FindImages(const fs::path &game, const std::vector<fs::path> &look_in)
       }
     }
   }
-  if (plan.iso.empty() && plan.update.empty() && disc_problem.empty())
-    return plan;  // nothing to install from: the caller says what is missing
+  // The disc's files the folder doesn't hold whole (what ExtractDisc keeps)
+  if (!plan.iso.empty()) {
+    size_t missing = 0;
+    for (const DiscFile &file : plan.files)
+      if (!fs::is_regular_file(game / fs::path(file.path), ec) || fs::file_size(game / fs::path(file.path), ec) != file.size)
+        ++missing;
+    EOT_INFO("[install] {} of the disc's {} files are not in {} whole", missing, plan.files.size(), game.string());
+    if (!missing) {
+      plan.iso.clear();
+      plan.files.clear();
+    }
+  }
+  if (plan.iso.empty() && plan.update.empty() && (have_disc || disc_problem.empty()))
+    return plan;  // nothing to install, or nothing to install from: the caller says what is missing
   plan.needed = true;
   if (!have_disc && plan.iso.empty())
     plan.problem = !disc_problem.empty() ? disc_problem
