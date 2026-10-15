@@ -489,7 +489,6 @@ ImageInstallDialog::ImageInstallDialog(rex::ui::ImGuiDrawer *drawer, rex::ui::Im
     : ImGuiDialog(drawer), immediate_drawer_(immediate_drawer), app_context_(app_context), plan_(std::move(plan)),
       game_(std::move(game)), on_done_(std::move(on_done)) {
   if (plan_.problem.empty()) {
-    started_ = Now();
     worker_ = RunImageInstall(plan_, game_, progress_);
   } else {
     EOT_WARN("[install] {}", plan_.problem);
@@ -566,9 +565,13 @@ void ImageInstallDialog::OnDraw(ImGuiIO &io) {
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.85f, 0.15f, 0.15f, 1.0f));
         ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 34.0f * scale), label.c_str());
         ImGui::PopStyleColor();
-        const uint64_t kept = progress_.bytes_kept.load();
-        const double elapsed = Now() - started_;
-        const double rate = elapsed > 2.0 ? double(done - std::min(done, kept)) / elapsed : 0.0;
+        const double now = Now();
+        if (samples_.empty() || now - samples_.back().first >= 1.0)
+          samples_.emplace_back(now, done);
+        while (samples_.size() > 2 && now - samples_.front().first > 10.0)
+          samples_.pop_front();
+        const auto &[then, done_then] = samples_.front();
+        const double rate = now - then >= 2.0 ? double(done - std::min(done, done_then)) / (now - then) : 0.0;
         std::string line = std::format("{} of {}", Size(done), Size(total));
         if (rate > 0 && !complete) {
           const double left = double(total - done) / rate;

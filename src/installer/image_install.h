@@ -12,12 +12,14 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <rex/ui/imgui_dialog.h>
@@ -93,7 +95,10 @@ private:
   std::unique_ptr<rex::ui::ImmediateTexture> background_;
   bool background_tried_ = false;
   bool finished_ = false;
-  double started_ = 0;
+  // (time, bytes done) about once a second over the last 10 s: the rate shown
+  // is the recent one, since the console's write cache makes the first GB or two
+  // far faster than the rest (the third try: 240 MB/s, then 15)
+  std::deque<std::pair<double, uint64_t>> samples_;
   float done_seconds_ = 0;
 };
 
