@@ -23,6 +23,7 @@ set(REEOT_PS5_SOURCES
     src/platform/update_check.cpp
     src/installer/install_registry.cpp
     src/installer/self_install.cpp
+    src/installer/port_packages.cpp
     src/installer/dlc_publish.cpp
     src/mods/mod_manager.cpp
     src/core/critical_section.cpp

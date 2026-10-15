@@ -65,6 +65,7 @@
 #include "ui/watermark.h"
 #include "platform/update_check.h"
 #include "installer/install_registry.h"
+#include "installer/port_packages.h"
 #include "mods/mod_manager.h"
 #include "gpu/shaders/guest_shaders.h"
 #if defined(__PROSPERO__)
@@ -569,8 +570,8 @@ ReeotApp::OnFinalizePaths(const rex::PathConfig &defaults, std::function<void(re
   // No installer on the console: the game folder comes from a PC install
   (void)resume;
   eot::platform::ShowFatalError("reeot - game files missing",
-                                "No Default.xex in /app0/gamedata. Install the game with reeot on a PC, then "
-                                "copy its game folder into the title's gamedata folder.");
+                                "No Default.xex in /app0/gamedata. Put your game's files there: the disc's "
+                                "contents, with Default.xexp and Data/GameLogic.dllp from its Title Update.");
   app_context().QuitFromUIThread();
   return std::nullopt;
 #endif
@@ -979,6 +980,12 @@ void ReeotApp::OnPreLaunchModule() {
     for (;;)
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+#endif
+#if defined(__PROSPERO__)
+  // The port's packages, which the title can't ship: made from the player's own
+  // game files the first time this build runs (installer/port_packages.h)
+  if (auto game = NamedGameFolder())
+    eot::installer::AuthorPortPackages(*game, "/app0/port");
 #endif
   eot::gpu::GuestShadersInit();
   eot::gpu::PsoCachePrecache();
